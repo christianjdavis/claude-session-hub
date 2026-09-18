@@ -6,6 +6,18 @@ Open VS Code on a parent folder such as `~/dev`. The extension finds every git
 repository below it and every Claude Code session whose working directory is
 below it, then keeps a live queue of what needs you.
 
+## Install
+
+Grab the latest `claude-session-hub-<version>.vsix` from
+[Releases](https://github.com/christianjdavis/claude-session-hub/releases) and install it:
+
+```sh
+code --install-extension claude-session-hub-<version>.vsix
+```
+
+or in VS Code: Extensions view → `···` → **Install from VSIX…**. The extension needs the
+`claude` CLI on your PATH; it offers to install it if missing.
+
 ## Views
 
 **Working** (activity bar → Claude Sessions)
@@ -113,6 +125,21 @@ npm run package      # .vsix
 ```
 
 Press F5 to launch an Extension Development Host on `~/dev`.
+
+## Releasing
+
+CI (`.github/workflows/ci.yml`) typechecks, tests and packages every push and pull request on
+macOS and Linux. A release is a tag:
+
+```sh
+# add a "## [x.y.z] - date" section to CHANGELOG.md, then
+npm run release -- patch    # or minor / major: bumps package.json, commits, tags vX.Y.Z, pushes
+```
+
+The release workflow (`.github/workflows/release.yml`) checks that the tag matches
+`package.json`, builds the `.vsix`, and publishes a GitHub Release with the CHANGELOG section
+as notes. Set the `VSCE_PAT` repository secret (a Marketplace personal access token for the
+`davisc` publisher) to also publish to the VS Code Marketplace, and `OVSX_PAT` for Open VSX.
 
 No setup steps are required before installing: if the `claude` CLI is not on
 your PATH the extension offers to run the official installer for you (or lets

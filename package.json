@@ -5,6 +5,21 @@
   "version": "0.1.0",
   "publisher": "davisc",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/christianjdavis/claude-session-hub.git"
+  },
+  "bugs": {
+    "url": "https://github.com/christianjdavis/claude-session-hub/issues"
+  },
+  "homepage": "https://github.com/christianjdavis/claude-session-hub#readme",
+  "keywords": [
+    "claude",
+    "claude code",
+    "sessions",
+    "ai",
+    "terminal"
+  ],
   "private": true,
   "engines": {
     "vscode": "^1.95.0"
@@ -22,7 +37,8 @@
     "typecheck": "tsc --noEmit",
     "test": "node esbuild.mjs --test && node dist/test.js",
     "snapshot": "node esbuild.mjs --snapshot && node dist/snapshot.js",
-    "package": "vsce package --no-dependencies"
+    "package": "vsce package --no-dependencies",
+    "release": "node scripts/release.mjs"
   },
   "contributes": {
     "viewsContainers": {

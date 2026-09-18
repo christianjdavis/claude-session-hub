@@ -11,3 +11,4 @@ dist/adopt-check.js
 dist/changes-check.js
 .gitignore
 *.vsix
+.github/**
