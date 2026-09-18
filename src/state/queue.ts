@@ -49,16 +49,25 @@ export function deriveQueue(input: QueueInput): { queue: QueueItem[]; counts: Co
       needsInput.push({ ...base, kind: 'needsInput', reason: live.waitingFor ?? 'input needed', since: live.statusUpdatedAt });
       continue;
     }
-    if (live.status === 'busy') {
-      running.push({ ...base, kind: 'running', reason: 'working', since: live.statusUpdatedAt });
-      continue;
-    }
-    // idle
+    // A question asked mid-turn: the registry may still say busy, the transcript is what counts.
     if (session?.pendingQuestion) {
       needsInput.push({ ...base, kind: 'needsInput', reason: 'question pending', since: live.statusUpdatedAt });
       continue;
     }
-    if (turnCompleted(session, live)) {
+    const finished = turnCompleted(session, live);
+    if (live.status === 'busy') {
+      // Registry says busy but the transcript recorded the end of the turn after that: it finished.
+      const stale = finished && session?.lastEndTurnTs !== null && session !== null && session.lastEndTurnTs > live.statusUpdatedAt;
+      if (!stale) {
+        running.push({ ...base, kind: 'running', reason: 'working', since: live.statusUpdatedAt });
+        continue;
+      }
+    } else if (!finished && session?.lastUserTs !== null && session !== null && session.lastUserTs > live.statusUpdatedAt) {
+      // Registry says idle but a prompt went in after it last said so and no turn has ended: working.
+      running.push({ ...base, kind: 'running', reason: 'working', since: session.lastUserTs });
+      continue;
+    }
+    if (finished) {
       const reviewKey = reviewKeyFor(sessionId, session, live);
       if (!input.reviewed.has(reviewKey)) {
         review.push({
@@ -75,6 +84,7 @@ export function deriveQueue(input: QueueInput): { queue: QueueItem[]; counts: Co
   }
 
   for (const job of input.jobs) {
+    if (job.live?.uiPid) continue; // the worker of a parked interactive session: its session row covers it
     if (!isTerminalJobState(job.state)) continue;
     if (input.now - job.updatedAt > input.jobMaxAgeMs) continue;
     const reviewKey = jobReviewKey(job);

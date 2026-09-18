@@ -3,6 +3,7 @@ import { emptySnapshot } from '../model/types';
 import type { LiveSession, Repo, Session, Snapshot } from '../model/types';
 import { isUnder, normalizePath } from '../paths';
 import { readJobs } from '../sources/jobs';
+import { attachParked } from './attach';
 import { readRegistry } from '../sources/registry';
 import { findRepoRoot, scanRepos } from '../sources/repos';
 import { CONCURRENCY, mapLimit, TranscriptScanner } from '../sources/transcripts';
@@ -66,7 +67,7 @@ export class SessionStore {
     await new Promise<void>(resolve => setTimeout(resolve, 0));
     timings['loopLag'] = Math.round(performance.now() - lagStart);
     mark = performance.now();
-    const liveList = await readRegistry();
+    const liveList = attachParked(await readRegistry());
     lap('registry');
     const jobs = await readJobs();
     lap('jobs');

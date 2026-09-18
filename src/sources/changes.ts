@@ -3,6 +3,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as readline from 'node:readline';
 import type { Session } from '../model/types';
+import { findRepoRoot } from './repos';
+import { claudeHome, isUnder } from '../paths';
 
 export type FileStatus = 'M' | 'A' | 'D' | 'R' | '?' | 'clean' | 'missing';
 
@@ -59,6 +61,8 @@ export interface TouchScan {
   touches: Map<string, number>;
   /** Timestamp of the last human prompt seen anywhere in the transcript (full scan). */
   lastHumanTs: number | null;
+  /** Directories shell commands worked in (`cd X`, `git -C X`): repos edited without Edit/Write. */
+  dirs: Set<string>;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -68,7 +72,10 @@ export interface TouchScan {
 // ---------------------------------------------------------------------------------------------
 
 const touchCache = new Map<string, { key: string; scan: TouchScan }>();
-const EMPTY: TouchScan = { touches: new Map(), lastHumanTs: null };
+const EMPTY: TouchScan = { touches: new Map(), lastHumanTs: null, dirs: new Set() };
+const MAX_DIR_HINTS = 32;
+const CD_RE = /(?:^|&&|\|\||;|\n)\s*cd\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g;
+const GIT_C_RE = /\bgit\s+-C\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g;
 
 const STATUS_TTL_MS = 5_000;
 const statusCache = new Map<string, { at: number; map: Map<string, FileStatus> }>();
@@ -111,7 +118,14 @@ export async function touchedFiles(session: Session): Promise<TouchScan> {
   if (cached && cached.key === key) return cached.scan;
 
   const touches = new Map<string, number>();
+  const dirs = new Set<string>();
   let lastHumanTs: number | null = null;
+  const home = process.env['HOME'] ?? '';
+  const addDir = (raw: string) => {
+    if (dirs.size >= MAX_DIR_HINTS || raw.includes('$')) return;
+    const expanded = raw === '~' ? home : raw.startsWith('~/') ? path.join(home, raw.slice(2)) : raw;
+    dirs.add(path.isAbsolute(expanded) ? path.normalize(expanded) : path.join(session.cwd, expanded));
+  };
   for (let i = 0; i < files.length; i++) {
     if (!stats[i]) continue;
     const rl = readline.createInterface({ input: fs.createReadStream(files[i] as string, { encoding: 'utf8' }), crlfDelay: Infinity });
@@ -126,7 +140,7 @@ export async function touchedFiles(session: Session): Promise<TouchScan> {
         continue;
       }
       // Cheap prefilter before JSON.parse.
-      if (!line.includes('"tool_use"') || !(line.includes('"file_path"') || line.includes('"notebook_path"'))) continue;
+      if (!line.includes('"tool_use"') || !(line.includes('"file_path"') || line.includes('"notebook_path"') || line.includes('"name":"Bash"'))) continue;
       let o: Record<string, unknown>;
       try {
         o = JSON.parse(line) as Record<string, unknown>;
@@ -141,9 +155,15 @@ export async function touchedFiles(session: Session): Promise<TouchScan> {
       for (const part of content) {
         if (!part || typeof part !== 'object') continue;
         const p = part as Record<string, unknown>;
-        if (p['type'] !== 'tool_use' || !EDIT_TOOLS.has(String(p['name']))) continue;
+        if (p['type'] !== 'tool_use') continue;
         const input = p['input'];
         if (!input || typeof input !== 'object') continue;
+        if (p['name'] === 'Bash') {
+          const cmd = (input as Record<string, unknown>)['command'];
+          if (typeof cmd === 'string') for (const re of [CD_RE, GIT_C_RE]) for (const m of cmd.matchAll(re)) addDir((m[1] ?? m[2] ?? m[3]) as string);
+          continue;
+        }
+        if (!EDIT_TOOLS.has(String(p['name']))) continue;
         const raw = (input as Record<string, unknown>)['file_path'] ?? (input as Record<string, unknown>)['notebook_path'];
         if (typeof raw !== 'string' || !raw) continue;
         const abs = path.isAbsolute(raw) ? raw : path.join(session.cwd, raw);
@@ -152,7 +172,7 @@ export async function touchedFiles(session: Session): Promise<TouchScan> {
       }
     }
   }
-  const scan = { touches, lastHumanTs };
+  const scan = { touches, lastHumanTs, dirs };
   touchCache.set(session.filePath, { key, scan });
   return scan;
 }
@@ -170,14 +190,15 @@ async function subagentTranscripts(session: Session): Promise<string[]> {
 }
 
 /**
- * Tracked working-tree changes for a repo: absolute path → status letter. Untracked files are
- * deliberately not enumerated here (that walk is the expensive part of `git status` in big
- * repos); `statusFor` asks about specific paths instead.
+ * Working-tree changes for a repo: absolute path → status letter. Untracked entries come back at
+ * directory granularity (`--untracked-files=normal`: a new folder is one `dir/` entry, skipped
+ * here, its files are not walked), so new files at known levels show up without the full
+ * untracked walk that makes `git status` slow in big repos. `statusFor` asks about specific paths.
  */
 export async function gitStatus(repoRoot: string, nowMs = Date.now()): Promise<Map<string, FileStatus>> {
   const cached = statusCache.get(repoRoot);
   if (cached && nowMs - cached.at < STATUS_TTL_MS) return cached.map;
-  const out = await run('git', ['-C', repoRoot, '--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=no']);
+  const out = await run('git', ['-C', repoRoot, '--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=normal']);
   const map = parsePorcelain(out ?? '', repoRoot);
   statusCache.set(repoRoot, { at: nowMs, map });
   return map;
@@ -203,6 +224,7 @@ function parsePorcelain(out: string, repoRoot: string): Map<string, FileStatus> 
     const x = entry[0] ?? ' ';
     const y = entry[1] ?? ' ';
     const rel = entry.slice(3);
+    if (rel.endsWith('/')) continue; // an untracked directory, not a file
     let status: FileStatus;
     if (x === '?' || y === '?') status = '?';
     else if (x === 'R' || y === 'R') {
@@ -216,7 +238,11 @@ function parsePorcelain(out: string, repoRoot: string): Map<string, FileStatus> 
   return map;
 }
 
-/** Files for the review list: session touches merged with tracked changes of the containing repo. */
+/**
+ * Files for the review list: session touches merged with tracked changes of the containing repo.
+ * A touched file outside the session's repo (or a session whose cwd is not a repo at all) is
+ * resolved to its own repo, so it still gets a git status and a diff instead of a plain open.
+ */
 export async function changedFilesFor(session: Session): Promise<ChangedFile[]> {
   const [scan, status] = await Promise.all([touchedFiles(session), session.repoRoot ? gitStatus(session.repoRoot) : Promise.resolve(new Map<string, FileStatus>())]);
   const { touches } = scan;
@@ -225,22 +251,62 @@ export async function changedFilesFor(session: Session): Promise<ChangedFile[]> 
   // Touched paths the tracked-only status did not mention: ask git about exactly those (finds
   // untracked files the session created), then stat whatever is still unknown.
   const unknown = [...touches.keys()].filter(p => !status.has(p));
-  const inRepo = session.repoRoot ? unknown.filter(p => p.startsWith(session.repoRoot + path.sep)) : [];
-  const extra = inRepo.length && session.repoRoot ? await statusFor(session.repoRoot, inRepo) : new Map<string, FileStatus>();
+  const home = session.repoRoot;
+  const inHome = (p: string) => home !== null && p.startsWith(home + path.sep);
+  const rootOf = new Map<string, string | null>();
+  await Promise.all(
+    unknown.map(async p => {
+      if (inHome(p)) rootOf.set(p, home);
+      else rootOf.set(p, await findRepoRoot(path.dirname(p), null));
+    })
+  );
+  const byRoot = new Map<string, string[]>();
+  for (const [p, r] of rootOf) if (r) byRoot.set(r, [...(byRoot.get(r) ?? []), p]);
+  // Repos the session worked in through the shell (edits via sed/python/heredocs leave no
+  // Edit/Write record): their tracked changes are the only evidence, so list them too.
+  const workedIn = new Set<string>();
+  await Promise.all([...scan.dirs].map(async d => {
+    const r = await findRepoRoot(d, null);
+    if (r && r !== home && !inHome(r)) workedIn.add(r);
+  }));
+  const extra = new Map<string, FileStatus>();
+  const foreign = new Map<string, Map<string, FileStatus>>();
+  await Promise.all([
+    ...[...byRoot].map(async ([r, paths]) => {
+      for (const [p, st] of await statusFor(r, paths)) extra.set(p, st);
+      // The session clearly works in that repo too: its tracked changes belong on the list as well.
+      if (r !== home) foreign.set(r, await gitStatus(r));
+    }),
+    ...[...workedIn].filter(r => !byRoot.has(r)).map(async r => foreign.set(r, await gitStatus(r)))
+  ]);
   const toStat = unknown.filter(p => !extra.has(p));
   const present = new Map<string, boolean>();
   await Promise.all(toStat.map(async p => present.set(p, await exists(p))));
 
   const out: ChangedFile[] = [];
+  const claudeDir = claudeHome();
   for (const [p, ts] of touches) {
+    // Claude's own plans, memory notes and settings are not the user's work product; a copy the
+    // session wrote into a repo is, and keeps its row.
+    if (isUnder(claudeDir, p) && !rootOf.get(p)) continue;
     let st: FileStatus = status.get(p) ?? extra.get(p) ?? 'clean';
     if (st === 'clean' && present.get(p) === false) st = 'missing';
-    out.push({ path: p, repoRoot: session.repoRoot, status: st, thisTurn: ts >= since, lastEditTs: ts || null });
+    const repoRoot = status.has(p) ? home : rootOf.get(p) ?? home;
+    // Committed and unchanged since: there is no diff to review. Files outside any repo stay,
+    // since "clean" is all git can say about them and they are still worth opening.
+    if (st === 'clean' && repoRoot) continue;
+    out.push({ path: p, repoRoot, status: st, thisTurn: ts >= since, lastEditTs: ts || null });
   }
   // Tracked working-tree changes the transcript did not record (e.g. made via Bash) still matter for review.
   for (const [p, st] of status) {
     if (touches.has(p)) continue;
-    out.push({ path: p, repoRoot: session.repoRoot, status: st, thisTurn: false, lastEditTs: null });
+    out.push({ path: p, repoRoot: home, status: st, thisTurn: false, lastEditTs: null });
+  }
+  for (const [r, map] of foreign) {
+    for (const [p, st] of map) {
+      if (touches.has(p)) continue;
+      out.push({ path: p, repoRoot: r, status: st, thisTurn: false, lastEditTs: null });
+    }
   }
   out.sort((a, b) => {
     if (a.thisTurn !== b.thisTurn) return a.thisTurn ? -1 : 1;
@@ -380,8 +446,8 @@ export async function sessionFiles(session: Session, commits: Commit[]): Promise
     }
     // Not in any session commit: uncommitted work in the repo, or a file outside it.
     const outside = !inRepo(w.path);
-    if (!outside && (w.status === 'clean' || w.status === 'missing')) continue;
-    byPath.set(w.path, { ...w, inCommits: false, inWorkingTree: !outside && w.status !== 'clean' });
+    if ((!outside || w.repoRoot) && (w.status === 'clean' || w.status === 'missing')) continue;
+    byPath.set(w.path, { ...w, inCommits: false, inWorkingTree: w.repoRoot !== null && w.status !== 'clean' && w.status !== 'missing' });
   }
   const files = [...byPath.values()];
   files.sort((a, b) => {

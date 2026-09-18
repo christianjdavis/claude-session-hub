@@ -164,7 +164,13 @@ export class TerminalManager implements vscode.Disposable {
       const snap = this.deps.snapshot();
       const cfg = this.deps.config();
       const livePids = new Map<number, LiveSession>();
-      for (const list of snap.live.values()) for (const l of list) livePids.set(l.pid, l);
+      for (const list of snap.live.values()) {
+        for (const l of list) {
+          livePids.set(l.pid, l);
+          // The terminal shows the parked UI process; the conversation it displays is the worker's.
+          if (l.uiPid) livePids.set(l.uiPid, l);
+        }
+      }
 
       // Mark bindings whose session vanished as stale (keep the terminal usable).
       for (const [term, b] of this.bindings) {

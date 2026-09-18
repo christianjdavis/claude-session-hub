@@ -56,7 +56,7 @@ export class WorkingTreeProvider implements vscode.TreeDataProvider<Node> {
     const snap = this.hub.snapshot;
     if (!node) {
       const idle = this.idleNodes();
-      const bg = snap.jobs.filter(j => j.live || j.state !== 'done');
+      const bg = snap.jobs.filter(j => !j.live?.uiPid && (j.live || j.state !== 'done'));
       const outside = this.outsideNodes();
       const sections: Array<Extract<Node, { kind: 'section' }>> = [
         { kind: 'section', id: 'needsInput', label: 'Needs input', count: snap.counts.needsInput },
@@ -89,7 +89,7 @@ export class WorkingTreeProvider implements vscode.TreeDataProvider<Node> {
       case 'idle':
         return this.idleNodes();
       case 'bg':
-        return snap.jobs.filter(j => j.live || j.state !== 'done').map(job => ({ kind: 'job', job }) as Node);
+        return snap.jobs.filter(j => !j.live?.uiPid && (j.live || j.state !== 'done')).map(job => ({ kind: 'job', job }) as Node);
       case 'outside':
         return this.outsideNodes();
       default:

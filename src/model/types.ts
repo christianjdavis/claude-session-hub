@@ -48,6 +48,12 @@ export interface LiveSession {
   version: string | null;
   formerNames: Array<{ name: string; until: number; sessionId?: string }>;
   registryPath: string;
+  /** Background job this process runs (`kind: 'bg'`), from the registry. */
+  jobId: string | null;
+  /** Interactive UI process that handed its conversation to a bg worker with this job id. */
+  parkedJobId: string | null;
+  /** For a worker attached to a parked UI: the UI process pid (the terminal the user sees). */
+  uiPid: number | null;
 }
 
 /** One ~/.claude/jobs/<short>/state.json. */
@@ -132,7 +138,7 @@ export function fingerprint(snap: Snapshot): string {
   for (const q of snap.queue) parts.push(`q:${q.kind}:${q.sessionId}:${q.reviewKey ?? ''}:${q.reason}`);
   for (const [id, list] of snap.live) {
     const l = primaryLive(list);
-    if (l) parts.push(`l:${id}:${l.status}:${l.waitingFor ?? ''}:${l.name ?? ''}:${list.length}`);
+    if (l) parts.push(`l:${id}:${l.status}:${l.waitingFor ?? ''}:${l.name ?? ''}:${list.length}:${l.uiPid ?? ''}`);
   }
   for (const j of snap.jobs) parts.push(`j:${j.short}:${j.state}`);
   for (const r of snap.repos) {

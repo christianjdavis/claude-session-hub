@@ -42,6 +42,11 @@
           "contextualTitle": "Claude sessions · working"
         },
         {
+          "id": "sessionHub.focus",
+          "name": "Focus",
+          "contextualTitle": "Claude sessions · focus"
+        },
+        {
           "id": "sessionHub.repos",
           "name": "All available",
           "contextualTitle": "Claude sessions · all repos"
@@ -52,6 +57,10 @@
       {
         "view": "sessionHub.working",
         "contents": "No Claude Code sessions are running.\n[Start a session](command:sessionHub.newSessionPick)\n[Refresh](command:sessionHub.refresh)"
+      },
+      {
+        "view": "sessionHub.focus",
+        "contents": "Nothing pinned yet. Use the pin icon on a repo or folder in **All available** (or right-click → Pin to Focus) to keep it here, in the order you choose.\n[Pin a repo…](command:sessionHub.pin)"
       }
     ],
     "commands": [
@@ -230,6 +239,30 @@
         "title": "Hide Ignored Files",
         "category": "Claude Sessions",
         "icon": "$(eye)"
+      },
+      {
+        "command": "sessionHub.pin",
+        "title": "Pin to Focus",
+        "category": "Claude Sessions",
+        "icon": "$(pin)"
+      },
+      {
+        "command": "sessionHub.unpin",
+        "title": "Unpin from Focus",
+        "category": "Claude Sessions",
+        "icon": "$(pinned)"
+      },
+      {
+        "command": "sessionHub.pinMoveUp",
+        "title": "Move Up in Focus",
+        "category": "Claude Sessions",
+        "icon": "$(arrow-up)"
+      },
+      {
+        "command": "sessionHub.pinMoveDown",
+        "title": "Move Down in Focus",
+        "category": "Claude Sessions",
+        "icon": "$(arrow-down)"
       }
     ],
     "menus": {
@@ -309,6 +342,18 @@
         {
           "command": "sessionHub.copyPath",
           "when": "false"
+        },
+        {
+          "command": "sessionHub.unpin",
+          "when": "false"
+        },
+        {
+          "command": "sessionHub.pinMoveUp",
+          "when": "false"
+        },
+        {
+          "command": "sessionHub.pinMoveDown",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -324,22 +369,22 @@
         },
         {
           "command": "sessionHub.refresh",
-          "when": "view == sessionHub.working || view == sessionHub.repos",
+          "when": "view == sessionHub.working || view == sessionHub.focus || view == sessionHub.repos",
           "group": "navigation@9"
         },
         {
           "command": "sessionHub.newSessionPick",
-          "when": "view == sessionHub.repos",
+          "when": "view == sessionHub.repos || view == sessionHub.focus",
           "group": "navigation@1"
         },
         {
           "command": "sessionHub.showHiddenFiles",
-          "when": "(view == sessionHub.working || view == sessionHub.repos) && !sessionHub.showHidden",
+          "when": "(view == sessionHub.working || view == sessionHub.focus || view == sessionHub.repos) && !sessionHub.showHidden",
           "group": "navigation@3"
         },
         {
           "command": "sessionHub.hideHiddenFiles",
-          "when": "(view == sessionHub.working || view == sessionHub.repos) && sessionHub.showHidden",
+          "when": "(view == sessionHub.working || view == sessionHub.focus || view == sessionHub.repos) && sessionHub.showHidden",
           "group": "navigation@3"
         }
       ],
@@ -371,27 +416,27 @@
         },
         {
           "command": "sessionHub.newSession",
-          "when": "viewItem == sh.repo || viewItem == sh.folder",
+          "when": "viewItem =~ /^sh\\.(repo|folder)(\\.pinned)?$/",
           "group": "inline@1"
         },
         {
           "command": "sessionHub.newSession",
-          "when": "viewItem == sh.repo || viewItem == sh.folder",
+          "when": "viewItem =~ /^sh\\.(repo|folder)(\\.pinned)?$/",
           "group": "1_act@1"
         },
         {
           "command": "sessionHub.revealCwd",
-          "when": "viewItem == sh.repo || viewItem == sh.folder",
+          "when": "viewItem =~ /^sh\\.(repo|folder)(\\.pinned)?$/",
           "group": "2_nav@1"
         },
         {
           "command": "sessionHub.openRepoWindow",
-          "when": "viewItem == sh.repo || viewItem == sh.folder",
+          "when": "viewItem =~ /^sh\\.(repo|folder)(\\.pinned)?$/",
           "group": "inline@2"
         },
         {
           "command": "sessionHub.openRepoWindow",
-          "when": "viewItem == sh.repo || viewItem == sh.folder || viewItem =~ /^sh\\.(session(\\.\\w+)?|live|queue\\.(review|running|needsInput))$/",
+          "when": "viewItem =~ /^sh\\.(repo|folder)(\\.pinned)?$/ || viewItem =~ /^sh\\.(session(\\.\\w+)?|live|queue\\.(review|running|needsInput))$/",
           "group": "2_nav@2"
         },
         {
@@ -471,12 +516,12 @@
         },
         {
           "command": "sessionHub.uploadFiles",
-          "when": "viewItem =~ /^sh\\.(fsDir|browseGroup|repo|folder)$/",
+          "when": "viewItem =~ /^sh\\.(fsDir|browseGroup|repo|folder)(\\.pinned)?$/",
           "group": "inline@3"
         },
         {
           "command": "sessionHub.uploadFiles",
-          "when": "viewItem =~ /^sh\\.(fsDir|browseGroup|repo|folder)$/",
+          "when": "viewItem =~ /^sh\\.(fsDir|browseGroup|repo|folder)(\\.pinned)?$/",
           "group": "1_act@5"
         },
         {
@@ -503,6 +548,36 @@
           "command": "sessionHub.copyPath",
           "when": "viewItem =~ /^sh\\.(fsDir|fsFile|browseGroup)$/ || viewItem =~ /^sh\\.file\\./",
           "group": "2_nav@3"
+        },
+        {
+          "command": "sessionHub.pin",
+          "when": "viewItem =~ /^sh\\.(repo|folder)$/",
+          "group": "inline@0"
+        },
+        {
+          "command": "sessionHub.pin",
+          "when": "viewItem =~ /^sh\\.(repo|folder)$/",
+          "group": "0_pin@1"
+        },
+        {
+          "command": "sessionHub.unpin",
+          "when": "viewItem =~ /^sh\\.(repo|folder)\\.pinned$/",
+          "group": "inline@0"
+        },
+        {
+          "command": "sessionHub.unpin",
+          "when": "viewItem =~ /^sh\\.(repo|folder)\\.pinned$/",
+          "group": "0_pin@1"
+        },
+        {
+          "command": "sessionHub.pinMoveUp",
+          "when": "view == sessionHub.focus && viewItem =~ /^sh\\.(repo|folder)\\.pinned$/",
+          "group": "0_pin@2"
+        },
+        {
+          "command": "sessionHub.pinMoveDown",
+          "when": "view == sessionHub.focus && viewItem =~ /^sh\\.(repo|folder)\\.pinned$/",
+          "group": "0_pin@3"
         }
       ]
     },

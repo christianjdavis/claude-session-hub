@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import type { Hub } from '../hub';
 import type { Repo, Session } from '../model/types';
 import type { Node } from './nodes';
+import { relToRoots } from '../paths';
 import { branchGroupItem, commitItem, commitsGroupItem, browseGroupItem, filesGroupItem, fileFolderItem, fileItem, fsDirItem, fsFileItem, folderItem, liveFor, messageItem, repoItem, sectionItem, sessionItem } from './nodes';
 
 interface FolderEntry {
@@ -33,9 +34,9 @@ export class ReposTreeProvider implements vscode.TreeDataProvider<Node> {
     const ctx = this.hub.itemContext();
     switch (node.kind) {
       case 'folder':
-        return folderItem(node);
+        return folderItem(node, ctx);
       case 'repo':
-        return repoItem(node);
+        return repoItem(node, ctx);
       case 'session':
         return sessionItem(node, ctx);
       case 'file':
@@ -78,10 +79,7 @@ export class ReposTreeProvider implements vscode.TreeDataProvider<Node> {
       if (snap.other.length > 0) nodes.push({ kind: 'section', id: 'other', label: 'Outside workspace', count: snap.other.length });
       return nodes;
     }
-    if (node.kind === 'folder') {
-      const entry = this.lookup(node.path) ?? { path: node.path, relPath: node.relPath, label: node.label, folders: new Map(), repos: [], sessions: [], liveCount: 0, sessionCount: 0 };
-      return this.folderChildren(entry);
-    }
+    if (node.kind === 'folder') return this.folderChildren(this.lookup(node.path) ?? this.emptyEntry(node.path, node.relPath, node.label));
     if (node.kind === 'repo') {
       const sessions = node.repo.sessions.map(session => ({ kind: 'session', session, live: liveFor(snap, session.id) }) as Node);
       return [...sessions, { kind: 'browseGroup', sessionId: null, root: node.repo.root, repoRoot: node.repo.isGit ? node.repo.root : null }];
@@ -94,6 +92,26 @@ export class ReposTreeProvider implements vscode.TreeDataProvider<Node> {
       return snap.other.slice(0, 50).map(session => ({ kind: 'session', session, live: liveFor(snap, session.id) }) as Node);
     }
     return [];
+  }
+
+  /** Repo row for a pinned path: the snapshot's entry when it has one, else a bare repo with no sessions. */
+  repoNode(root: string): Node {
+    this.ensureIndex();
+    const repo = this.hub.snapshot.repos.find(r => r.root === root);
+    if (repo) return { kind: 'repo', repo };
+    return { kind: 'repo', repo: { root, label: path.basename(root), relPath: relToRoots(this.hub.itemContext().roots, root), isGit: true, sessions: [], liveCount: 0 } };
+  }
+
+  /** Folder row for a pinned path, with live/session counts when the index knows it. */
+  folderNode(p: string): Node {
+    this.ensureIndex();
+    const entry = this.lookup(p);
+    if (entry) return this.toFolderNode(entry);
+    return { kind: 'folder', path: p, relPath: relToRoots(this.hub.itemContext().roots, p), label: path.basename(p), liveCount: 0, sessionCount: 0 };
+  }
+
+  private emptyEntry(p: string, relPath: string, label: string): FolderEntry {
+    return { path: p, relPath, label, folders: new Map(), repos: [], sessions: [], liveCount: 0, sessionCount: 0 };
   }
 
   /**

@@ -2,10 +2,13 @@ import assert from 'node:assert/strict';
 import { displayName, primaryLive } from '../src/model/types';
 import type { LiveSession, Session } from '../src/model/types';
 import { deriveQueue, turnCompleted } from '../src/state/queue';
+import { attachParked } from '../src/state/attach';
+import { readRegistry } from '../src/sources/registry';
 import { MemoryStore, ReviewedStore } from '../src/state/reviewed-store';
+import { PinStore } from '../src/state/pin-store';
 import { formatRelativeTime, truncate } from '../src/format';
 import { isUnder, relToRoots } from '../src/paths';
-import { EMPTY_TREE, invalidateRepo, parseNameStatus, sessionCommits, sessionFiles } from '../src/sources/changes';
+import { EMPTY_TREE, changedFilesFor, invalidateRepo, parseNameStatus, sessionCommits, sessionFiles } from '../src/sources/changes';
 import type { PushMessage } from '../src/backend/api';
 import { fileTreeNodes } from '../src/views/file-tree';
 import { listEntries } from '../src/sources/repos';
@@ -33,6 +36,9 @@ function live(p: Partial<LiveSession>): LiveSession {
     version: null,
     formerNames: [],
     registryPath: '',
+    jobId: null,
+    parkedJobId: null,
+    uiPid: null,
     ...p
   };
 }
@@ -115,6 +121,59 @@ test('pending AskUserQuestion while idle → needsInput', () => {
   assert.equal(r.queue[0]!.kind, 'needsInput');
 });
 
+test('attachParked: parked UI folds into its bg worker, which becomes the interactive session', () => {
+  const ui = live({ pid: 100, sessionId: 'old', kind: 'interactive', status: 'busy', statusUpdatedAt: 1, parkedJobId: 'abc', name: 'ui-name', nameSource: 'auto', formerNames: [{ name: 'earlier', until: 5 }] });
+  const worker = live({ pid: 200, sessionId: 'new', kind: 'bg', status: 'idle', statusUpdatedAt: 9000, jobId: 'abc' });
+  const plainBg = live({ pid: 300, sessionId: 'job', kind: 'bg', jobId: 'zzz' });
+  const orphanUi = live({ pid: 400, sessionId: 'orphan', kind: 'interactive', parkedJobId: 'gone' });
+  const out = attachParked([ui, worker, plainBg, orphanUi]);
+  assert.deepEqual(out.map(l => l.sessionId).sort(), ['job', 'new', 'orphan'], 'parked UI dropped, worker kept, others untouched');
+  const w = out.find(l => l.sessionId === 'new')!;
+  assert.equal(w.kind, 'interactive');
+  assert.equal(w.uiPid, 100);
+  assert.equal(w.pid, 200);
+  assert.equal(w.name, 'ui-name', 'worker without a name takes the UI name');
+  assert.equal(w.formerNames[0]!.name, 'earlier');
+  assert.equal(out.find(l => l.sessionId === 'job')!.kind, 'bg');
+  assert.deepEqual(attachParked([plainBg]), [plainBg], 'no parked entries: list unchanged');
+  // The attached worker drives the queue; its job is not listed twice.
+  const job = { short: 'abc', sessionId: 'new', cwd: '/r', name: 'j', state: 'done', detail: null, tempo: null, updatedAt: 8000, live: w };
+  const r = deriveQueue({ live: new Map([['new', [w]]]), sessions: new Map([['new', session({ id: 'new', lastUserTs: 2000, lastEndTurnTs: 4000 })]]), jobs: [job], reviewed: new Set<string>(), jobMaxAgeMs: 1e9, now: 9000 });
+  assert.deepEqual(r.queue.map(q => `${q.kind}:${q.sessionId}:${q.job ? 'job' : 'session'}`), ['review:new:session']);
+});
+
+test('queue trusts the transcript over a stale registry status', () => {
+  // busy, but a question is pending → needs input
+  let r = deriveQueue({ live: new Map([['s1', [live({ status: 'busy' })]]]), sessions: new Map([['s1', session({ pendingQuestion: true, lastUserTs: 1000 })]]), jobs: [], reviewed: new Set<string>(), jobMaxAgeMs: 1e9, now: 9000 });
+  assert.equal(r.queue[0]!.kind, 'needsInput');
+  // busy since 5000, but the turn ended at 7000 after the prompt at 6000 → completed
+  r = deriveQueue({ live: new Map([['s1', [live({ status: 'busy', statusUpdatedAt: 5000 })]]]), sessions: new Map([['s1', session({ lastUserTs: 6000, lastEndTurnTs: 7000 })]]), jobs: [], reviewed: new Set<string>(), jobMaxAgeMs: 1e9, now: 9000 });
+  assert.equal(r.queue[0]!.kind, 'review');
+  assert.equal(r.counts.running, 0);
+  // busy since 5000, turn ended at 4000 before that → still running
+  r = deriveQueue({ live: new Map([['s1', [live({ status: 'busy', statusUpdatedAt: 5000 })]]]), sessions: new Map([['s1', session({ lastUserTs: 3000, lastEndTurnTs: 4000 })]]), jobs: [], reviewed: new Set<string>(), jobMaxAgeMs: 1e9, now: 9000 });
+  assert.equal(r.counts.running, 1);
+  // idle since 5000, but a prompt went in at 6000 and nothing ended → running
+  r = deriveQueue({ live: new Map([['s1', [live({ status: 'idle', statusUpdatedAt: 5000 })]]]), sessions: new Map([['s1', session({ lastUserTs: 6000, lastEndTurnTs: 4000 })]]), jobs: [], reviewed: new Set<string>(), jobMaxAgeMs: 1e9, now: 9000 });
+  assert.equal(r.queue[0]!.kind, 'running');
+  assert.equal(r.queue[0]!.since, 6000);
+});
+
+test('readRegistry parses jobId and parkedJobId, drops dead pids', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-reg-'));
+  try {
+    fs.writeFileSync(path.join(dir, `${process.pid}.json`), JSON.stringify({ pid: process.pid, sessionId: 'a', cwd: '/r', kind: 'bg', jobId: 'j1', status: 'busy', startedAt: 1, updatedAt: 2, statusUpdatedAt: 2 }));
+    fs.writeFileSync(path.join(dir, '999999.json'), JSON.stringify({ pid: 999999, sessionId: 'b', cwd: '/r', kind: 'interactive', parkedJobId: 'j1', status: 'busy', startedAt: 1 }));
+    const list = await readRegistry(dir);
+    assert.equal(list.length, 1, 'dead pid filtered');
+    assert.equal(list[0]!.jobId, 'j1');
+    assert.equal(list[0]!.parkedJobId, null);
+    assert.equal(list[0]!.uiPid, null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('non-interactive live sessions are excluded from the queue', () => {
   const l = live({ status: 'busy', kind: 'bg' });
   const r = deriveQueue({ live: new Map([['s1', [l]]]), sessions: new Map(), jobs: [], reviewed: new Set<string>(), jobMaxAgeMs: 1e9, now: 9000 });
@@ -164,6 +223,33 @@ test('ReviewedStore persists and prunes', async () => {
   now += 31 * 86_400_000;
   const rs2 = new ReviewedStore(mem, () => now);
   assert.equal(rs2.has('k1'), false);
+});
+
+test('PinStore: add/remove/move/moveBefore persist in order', async () => {
+  // Mutations apply in memory at once; `saved` is the storage write.
+  const mem = new MemoryStore();
+  const ps = new PinStore(mem);
+  assert.equal(ps.add({ path: '/a', kind: 'repo' }).changed, true);
+  assert.equal(ps.add({ path: '/b', kind: 'folder' }).changed, true);
+  assert.equal(ps.add({ path: '/c', kind: 'repo' }).changed, true);
+  assert.equal(ps.add({ path: '/a', kind: 'repo' }).changed, false, 'second add is a no-op');
+  assert.deepEqual(ps.list().map(p => p.path), ['/a', '/b', '/c']);
+  assert.equal(ps.move('/a', -1).changed, false, 'move up at the top is a no-op');
+  assert.equal(ps.move('/c', 1).changed, false, 'move down at the bottom is a no-op');
+  assert.equal(ps.move('/c', -1).changed, true);
+  assert.deepEqual(ps.list().map(p => p.path), ['/a', '/c', '/b']);
+  assert.equal(ps.moveBefore('/b', '/a').changed, true);
+  assert.deepEqual(ps.list().map(p => p.path), ['/b', '/a', '/c']);
+  assert.equal(ps.moveBefore('/b', null).changed, true, 'null = to the end');
+  assert.deepEqual(ps.list().map(p => p.path), ['/a', '/c', '/b']);
+  assert.equal(ps.moveBefore('/a', '/zzz').changed, false, 'unknown anchor leaves order alone');
+  assert.deepEqual(ps.list().map(p => p.path), ['/a', '/c', '/b']);
+  assert.equal(ps.remove('/c').changed, true);
+  assert.equal(ps.remove('/c').changed, false);
+  await ps.remove('/nope').saved;
+  const ps2 = new PinStore(mem);
+  assert.deepEqual(ps2.list(), [{ path: '/a', kind: 'repo' }, { path: '/b', kind: 'folder' }], 'a second instance sees the same order');
+  assert.ok(ps2.paths().has('/b') && !ps2.paths().has('/c'));
 });
 
 test('format + paths helpers', () => {
@@ -231,7 +317,7 @@ test('sessionFiles: PR-style aggregate across commits + working tree, root commi
     git('add', '.');
     git('commit', '-q', '-m', 'two');
     fs.writeFileSync(path.join(dir, 'b.txt'), 'b2\n'); // uncommitted edit to a file the session committed
-    fs.writeFileSync(path.join(dir, 'c.txt'), 'c\n'); // untracked and never touched via a tool: not the session's
+    fs.writeFileSync(path.join(dir, 'c.txt'), 'c\n'); // untracked, never touched via a tool: listed anyway (shell-created files leave no other trace)
 
     const now = Date.now();
     const s = session({ id: 'g1', filePath: '', cwd: dir, cwdReal: dir, repoRoot: dir, createdAt: now - 60_000, lastActivity: now });
@@ -243,17 +329,18 @@ test('sessionFiles: PR-style aggregate across commits + working tree, root commi
     assert.equal(agg.from, EMPTY_TREE, 'oldest commit is a root commit → empty tree');
     assert.deepEqual(
       agg.files.map(f => `${f.status} ${path.basename(f.path)} c=${f.inCommits ? 1 : 0} w=${f.inWorkingTree ? 1 : 0}`),
-      ['A b.txt c=1 w=1', 'A a.txt c=1 w=0'],
-      'uncommitted first, then by path; c.txt excluded'
+      ['A b.txt c=1 w=1', '? c.txt c=0 w=1', 'A a.txt c=1 w=0'],
+      'uncommitted first, then by path'
     );
-    assert.equal(agg.files[1]!.refs?.from, EMPTY_TREE, 'a.txt diffs from before the root commit');
-    assert.equal(agg.files[0]!.refs?.from, commits[1]!.sha, 'b.txt diffs from the parent of the commit that added it');
-    assert.equal(agg.files[0]!.refs?.to, null);
+    const byName = (n: string) => agg.files.find(f => path.basename(f.path) === n)!;
+    assert.equal(byName('a.txt').refs?.from, EMPTY_TREE, 'a.txt diffs from before the root commit');
+    assert.equal(byName('b.txt').refs?.from, commits[1]!.sha, 'b.txt diffs from the parent of the commit that added it');
+    assert.equal(byName('b.txt').refs?.to, null);
 
     // No session commits: plain working-tree view against HEAD.
     const wt = await sessionFiles(s, []);
     assert.equal(wt.from, 'HEAD');
-    assert.deepEqual(wt.files.map(f => `${f.status} ${path.basename(f.path)} w=${f.inWorkingTree ? 1 : 0}`), ['M b.txt w=1']);
+    assert.deepEqual(wt.files.map(f => `${f.status} ${path.basename(f.path)} w=${f.inWorkingTree ? 1 : 0}`), ['M b.txt w=1', '? c.txt w=1']);
 
     // Commit the edit: the row flips to committed-only.
     git('add', '.');
@@ -265,6 +352,59 @@ test('sessionFiles: PR-style aggregate across commits + working tree, root commi
     assert.equal(b.inWorkingTree, false);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('changedFilesFor: a touched file in another repo gets that repo as root and a status', async () => {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hub-x-')));
+  const cwd = path.join(base, 'notes'); // session cwd: not a repo
+  const repo = path.join(base, 'tool'); // the repo the session actually edited
+  fs.mkdirSync(cwd);
+  fs.mkdirSync(repo);
+  const git = (...args: string[]) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...args], { stdio: 'pipe' }).toString();
+  try {
+    git('init', '-q');
+    fs.writeFileSync(path.join(repo, 'a.ts'), 'a1\n');
+    fs.writeFileSync(path.join(repo, 'k.ts'), 'k1\n');
+    git('add', '.');
+    git('commit', '-q', '-m', 'one');
+    fs.writeFileSync(path.join(repo, 'a.ts'), 'a2\n'); // edited by the session (transcript) and dirty
+    fs.writeFileSync(path.join(repo, 'done.ts'), 'd\n'); // touched by the session, then committed: nothing left to diff
+    git('add', 'done.ts');
+    git('commit', '-q', '-m', 'two');
+    fs.writeFileSync(path.join(repo, 'k.ts'), 'k2\n'); // dirty but not in the transcript (Bash edit)
+    fs.writeFileSync(path.join(cwd, 'plan.md'), 'p\n'); // touched, no repo at all
+    const claudeDir = path.join(base, 'claude-home');
+    fs.mkdirSync(path.join(claudeDir, 'plans'), { recursive: true });
+    fs.writeFileSync(path.join(claudeDir, 'plans', 'x.md'), 'plan\n'); // Claude's own plan file: hidden
+    process.env['CLAUDE_CONFIG_DIR'] = claudeDir;
+    const ts = new Date().toISOString();
+    const edit = (file: string) => JSON.stringify({ type: 'assistant', timestamp: ts, message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: file } }] } });
+    const transcript = path.join(base, 't.jsonl');
+    fs.writeFileSync(transcript, [edit(path.join(repo, 'a.ts')), edit(path.join(repo, 'done.ts')), edit(path.join(cwd, 'plan.md')), edit(path.join(claudeDir, 'plans', 'x.md'))].join('\n') + '\n');
+    // A second repo only ever touched through the shell: `cd` there in a Bash call, edit with sed.
+    const repo2 = path.join(base, 'shellonly');
+    fs.mkdirSync(repo2);
+    const git2 = (...args: string[]) => execFileSync('git', ['-C', repo2, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...args], { stdio: 'pipe' }).toString();
+    git2('init', '-q');
+    fs.writeFileSync(path.join(repo2, 's.py'), 's1\n');
+    git2('add', '.');
+    git2('commit', '-q', '-m', 'one');
+    fs.writeFileSync(path.join(repo2, 's.py'), 's2\n');
+    fs.writeFileSync(path.join(repo2, 'new.py'), 'n\n'); // untracked file at the top level: listed
+    fs.mkdirSync(path.join(repo2, 'newdir'));
+    fs.writeFileSync(path.join(repo2, 'newdir', 'deep.py'), 'd\n'); // untracked directory: not walked
+    const bash = (command: string) => JSON.stringify({ type: 'assistant', timestamp: ts, message: { content: [{ type: 'tool_use', name: 'Bash', input: { command } }] } });
+    fs.appendFileSync(transcript, bash(`cd ${repo2} && sed -i '' 's/s1/s2/' s.py && git status`) + '\n' + bash('cd ~/.claude/sessions && ls') + '\n');
+    const s = session({ id: 'x1', filePath: transcript, cwd, cwdReal: cwd, repoRoot: null, createdAt: Date.now() - 1000, lastActivity: Date.now() });
+    const files = (await changedFilesFor(s)).map(f => `${f.status} ${path.basename(f.path)} root=${f.repoRoot ? path.basename(f.repoRoot) : '-'}`).sort();
+    assert.deepEqual(files, ['? new.py root=shellonly', 'M a.ts root=tool', 'M k.ts root=tool', 'M s.py root=shellonly', 'clean plan.md root=-'], 'done.ts (committed, unchanged) and the plan under the Claude dir are dropped; the shell-only repo is found via cd; untracked dirs are not walked');
+    const wt = await sessionFiles(s, []);
+    assert.equal(wt.from, null, 'no home repo: plain working list');
+    assert.equal(wt.files.length, 5);
+  } finally {
+    delete process.env['CLAUDE_CONFIG_DIR'];
+    fs.rmSync(base, { recursive: true, force: true });
   }
 });
 

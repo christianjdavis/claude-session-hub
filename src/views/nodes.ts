@@ -82,6 +82,8 @@ export interface ItemContext {
   roots: string[];
   extensionUri: vscode.Uri;
   snapshot: Snapshot;
+  /** Paths pinned into the Focus view. */
+  pinned: ReadonlySet<string>;
 }
 
 export function sectionItem(node: Extract<Node, { kind: 'section' }>, collapsed: boolean): vscode.TreeItem {
@@ -133,7 +135,7 @@ export function liveItem(node: Extract<Node, { kind: 'live' }>, ctx: ItemContext
   return item;
 }
 
-export function repoItem(node: Extract<Node, { kind: 'repo' }>): vscode.TreeItem {
+export function repoItem(node: Extract<Node, { kind: 'repo' }>, ctx: ItemContext): vscode.TreeItem {
   const r = node.repo;
   const item = new vscode.TreeItem(
     r.label,
@@ -144,21 +146,21 @@ export function repoItem(node: Extract<Node, { kind: 'repo' }>): vscode.TreeItem
   if (r.sessions.length > 0) parts.push(`${r.sessions.length} session${r.sessions.length === 1 ? '' : 's'}`);
   item.description = parts.join(' · ');
   item.id = `repo:${r.root}`;
-  item.contextValue = 'sh.repo';
+  item.contextValue = ctx.pinned.has(r.root) ? 'sh.repo.pinned' : 'sh.repo';
   item.iconPath = new vscode.ThemeIcon(r.isGit ? 'repo' : 'folder', r.liveCount > 0 ? new vscode.ThemeColor('charts.green') : undefined);
   item.tooltip = shortenHomePath(r.root);
   item.resourceUri = vscode.Uri.file(r.root);
   return item;
 }
 
-export function folderItem(node: Extract<Node, { kind: 'folder' }>): vscode.TreeItem {
+export function folderItem(node: Extract<Node, { kind: 'folder' }>, ctx: ItemContext): vscode.TreeItem {
   const item = new vscode.TreeItem(node.label, node.liveCount > 0 ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed);
   const parts: string[] = [];
   if (node.liveCount > 0) parts.push(`${node.liveCount} live`);
   if (node.sessionCount > 0) parts.push(`${node.sessionCount} session${node.sessionCount === 1 ? '' : 's'}`);
   item.description = parts.join(' · ');
   item.id = `folder:${node.path}`;
-  item.contextValue = 'sh.folder';
+  item.contextValue = ctx.pinned.has(node.path) ? 'sh.folder.pinned' : 'sh.folder';
   item.iconPath = new vscode.ThemeIcon('folder', node.liveCount > 0 ? new vscode.ThemeColor('charts.green') : undefined);
   item.tooltip = shortenHomePath(node.path);
   item.resourceUri = vscode.Uri.file(node.path);

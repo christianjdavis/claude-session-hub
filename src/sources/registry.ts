@@ -74,7 +74,10 @@ function toLive(o: Record<string, unknown>, registryPath: string): LiveSession |
     updatedAt: num(o['updatedAt']) ?? startedAt,
     version: str(o['version']),
     formerNames,
-    registryPath
+    registryPath,
+    jobId: str(o['jobId']),
+    parkedJobId: str(o['parkedJobId']),
+    uiPid: null
   };
 }
 

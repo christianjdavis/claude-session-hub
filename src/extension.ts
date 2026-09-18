@@ -8,9 +8,10 @@ import { HubStatusBar } from './ui/status-bar';
 import { cycle, focusNextNeedsInput, showSwitcher } from './ui/switcher';
 import { ReposTreeProvider } from './views/repos-tree';
 import { WorkingTreeProvider } from './views/working-tree';
+import { FocusTreeProvider } from './views/focus-tree';
 import type { Node } from './views/nodes';
 import { dirOf, jobOf, sessionIdOf, sessionOf } from './views/nodes';
-import { FsDropController } from './views/drop';
+import { FsDropController, PinDropController } from './views/drop';
 import { uploadInto } from './fs/upload';
 import { shortenHomePath } from './paths';
 import { formatRelativeTime } from './format';
@@ -31,7 +32,9 @@ export function activate(context: vscode.ExtensionContext): void {
   const dragAndDropController = new FsDropController(hub);
   const workingView = vscode.window.createTreeView('sessionHub.working', { treeDataProvider: working, showCollapseAll: false, dragAndDropController });
   const reposView = vscode.window.createTreeView('sessionHub.repos', { treeDataProvider: repos, showCollapseAll: true, dragAndDropController });
-  context.subscriptions.push(workingView, reposView, new HubStatusBar(hub));
+  const focus = new FocusTreeProvider(hub, repos);
+  const focusView = vscode.window.createTreeView('sessionHub.focus', { treeDataProvider: focus, showCollapseAll: true, dragAndDropController: new PinDropController(hub, dragAndDropController) });
+  context.subscriptions.push(workingView, focusView, reposView, new HubStatusBar(hub));
 
   context.subscriptions.push(
     hub.onDidChange(snap => {
@@ -212,46 +215,66 @@ export function activate(context: vscode.ExtensionContext): void {
     const cwd = cwdFrom(arg);
     if (cwd) await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(cwd));
   });
+  /**
+   * Editor opens are serialized and de-duplicated. While the extension host is frozen by another
+   * extension, clicks queue up; running the resulting opens concurrently makes VS Code dispose one
+   * preview editor's model while another is still loading ("Model is disposed!", an error page).
+   * A duplicate request for the same target while one is in flight is dropped (double-click).
+   */
+  let openChain: Promise<unknown> = Promise.resolve();
+  let openInFlight: string | null = null;
+  const serialOpen = (key: string, fn: () => Thenable<unknown>): Promise<void> => {
+    if (openInFlight === key) return Promise.resolve();
+    openInFlight = key;
+    const run = async () => {
+      try {
+        await fn();
+      } catch (err) {
+        // One retry: the first attempt usually failed because a queued open raced it.
+        hub.log(`open ${key} failed once (${(err as Error).message}); retrying`);
+        await new Promise(r => setTimeout(r, 150));
+        await fn();
+      } finally {
+        if (openInFlight === key) openInFlight = null;
+      }
+    };
+    openChain = openChain.then(run, run);
+    return openChain as Promise<void>;
+  };
+
   reg('sessionHub.openDiff', async arg => {
     const node = arg as Node | undefined;
     if (node?.kind !== 'file') return;
     const f = node.file;
+    hub.log(`openDiff ${shortenHomePath(f.path)}: status=${f.status} repo=${f.repoRoot ? shortenHomePath(f.repoRoot) : '-'} refs=${f.refs ? `${f.refs.from ?? '∅'}..${f.refs.to ?? 'wt'}` : '-'}`);
     const fileUri = vscode.Uri.file(f.path);
     const name = f.path.split('/').pop() ?? f.path;
+    const show = (uri: vscode.Uri) => () => vscode.window.showTextDocument(uri, { preview: true });
+    const key = `diff:${f.path}:${f.refs?.from ?? ''}:${f.refs?.to ?? ''}`;
     if (f.refs && f.repoRoot) {
       // Commit or branch diff: compare two git refs (or a ref against the working tree).
       const left = f.refs.from ? gitUri(f.repoRoot, f.path, f.refs.from) : null;
       const right = f.refs.to ? gitUri(f.repoRoot, f.path, f.refs.to) : fileUri;
       const label = `${name} (${f.refs.from?.slice(0, 10) ?? '∅'} ↔ ${f.refs.to?.slice(0, 10) ?? 'working tree'})`;
-      if (f.status === 'A' || !left) {
-        await vscode.window.showTextDocument(right, { preview: true });
-        return;
-      }
-      if (f.status === 'D') {
-        await vscode.window.showTextDocument(left, { preview: true });
-        return;
-      }
-      await vscode.commands.executeCommand('vscode.diff', left, right, label, { preview: true });
-      return;
+      if (f.status === 'A' || !left) return serialOpen(key, show(right));
+      if (f.status === 'D') return serialOpen(key, show(left));
+      return serialOpen(key, () => vscode.commands.executeCommand('vscode.diff', left, right, label, { preview: true }));
     }
     if (f.status === 'missing') {
       void vscode.window.showInformationMessage(`${name} no longer exists on disk.`);
       return;
     }
-    if (!f.repoRoot || f.status === '?' || f.status === 'clean') {
-      await vscode.window.showTextDocument(fileUri, { preview: true });
-      return;
-    }
+    if (!f.repoRoot || f.status === '?' || f.status === 'clean') return serialOpen(key, show(fileUri));
     const head = gitUri(f.repoRoot, f.path, 'HEAD');
-    if (f.status === 'D') {
-      await vscode.window.showTextDocument(head, { preview: true });
-      return;
-    }
-    await vscode.commands.executeCommand('vscode.diff', head, fileUri, `${name} (HEAD ↔ working tree)`, { preview: true });
+    if (f.status === 'D') return serialOpen(key, show(head));
+    return serialOpen(key, () => vscode.commands.executeCommand('vscode.diff', head, fileUri, `${name} (HEAD ↔ working tree)`, { preview: true }));
   });
   reg('sessionHub.openFile', async arg => {
     const node = arg as Node | undefined;
-    if (node?.kind === 'file' && node.file.status !== 'missing') await vscode.window.showTextDocument(vscode.Uri.file(node.file.path), { preview: true });
+    if (node?.kind === 'file' && node.file.status !== 'missing') {
+      const uri = vscode.Uri.file(node.file.path);
+      await serialOpen(`file:${node.file.path}`, () => vscode.window.showTextDocument(uri, { preview: true }));
+    }
   });
   reg('sessionHub.openAllDiffs', async arg => {
     const s = sessionOf(arg as Node | undefined) ?? (idFrom(arg) ? hub.snapshot.sessions.get(idFrom(arg) as string) : undefined);
@@ -287,8 +310,8 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   reg('sessionHub.openFileToSide', async arg => {
     const node = arg as Node | undefined;
-    if (node?.kind === 'fsFile') await vscode.window.showTextDocument(vscode.Uri.file(node.path), { viewColumn: vscode.ViewColumn.Beside, preview: false });
-    else if (node?.kind === 'file' && node.file.status !== 'missing') await vscode.window.showTextDocument(vscode.Uri.file(node.file.path), { viewColumn: vscode.ViewColumn.Beside, preview: false });
+    const p = node?.kind === 'fsFile' ? node.path : node?.kind === 'file' && node.file.status !== 'missing' ? node.file.path : null;
+    if (p) await serialOpen(`side:${p}`, () => vscode.window.showTextDocument(vscode.Uri.file(p), { viewColumn: vscode.ViewColumn.Beside, preview: false }));
   });
   reg('sessionHub.copyPath', async arg => {
     const node = arg as Node | undefined;
@@ -299,6 +322,32 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   reg('sessionHub.showHiddenFiles', () => hub.setShowHidden(true));
   reg('sessionHub.hideHiddenFiles', () => hub.setShowHidden(false));
+  // Focus view: manual promotion of repo/folder rows, kept in pin order.
+  reg('sessionHub.pin', async arg => {
+    const node = arg as Node | undefined;
+    let dir = node?.kind === 'repo' || node?.kind === 'folder' ? dirOf(node) : null;
+    let kind: 'repo' | 'folder' = node?.kind === 'folder' ? 'folder' : 'repo';
+    if (!dir) {
+      dir = await pickRepo(hub);
+      if (!dir) return;
+      kind = hub.snapshot.repos.find(r => r.root === dir)?.isGit === false ? 'folder' : 'repo';
+    }
+    const added = await hub.pin(dir, kind, node);
+    void vscode.window.setStatusBarMessage(added ? `Pinned ${shortenHomePath(dir)} to Focus` : `${shortenHomePath(dir)} is already in Focus`, 2500);
+  });
+  reg('sessionHub.unpin', async arg => {
+    const node = arg as Node | undefined;
+    const dir = dirOf(node);
+    if (dir) await hub.unpin(dir, node);
+  });
+  reg('sessionHub.pinMoveUp', async arg => {
+    const dir = dirOf(arg as Node | undefined);
+    if (dir) await hub.movePin(dir, -1);
+  });
+  reg('sessionHub.pinMoveDown', async arg => {
+    const dir = dirOf(arg as Node | undefined);
+    if (dir) await hub.movePin(dir, 1);
+  });
   reg('sessionHub.toggleTerminalLocation', async () => {
     const cur = hub.config.terminalLocation;
     const next = cur === 'editor' ? 'panel' : 'editor';

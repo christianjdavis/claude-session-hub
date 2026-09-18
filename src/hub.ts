@@ -7,6 +7,8 @@ import type { QueueItem, Session, Snapshot } from './model/types';
 import { displayName, fingerprint, primaryLive } from './model/types';
 import { jobsDir, projectsDir, sessionsDir } from './paths';
 import { ReviewedStore } from './state/reviewed-store';
+import { PinStore } from './state/pin-store';
+import type { Pin } from './state/pin-store';
 import { deriveQueue } from './state/queue';
 import { TerminalManager } from './terminals/manager';
 import type { ItemContext, Node } from './views/nodes';
@@ -44,6 +46,8 @@ interface ChildCache {
 export class Hub implements vscode.Disposable {
   readonly output: vscode.OutputChannel;
   readonly reviewed: ReviewedStore;
+  /** Repo/folder rows promoted into the Focus view, in display order. */
+  readonly pins: PinStore;
   readonly terminals: TerminalManager;
   private backend: Backend;
   private readonly emitter = new vscode.EventEmitter<Snapshot>();
@@ -51,6 +55,9 @@ export class Hub implements vscode.Disposable {
   private readonly nodeEmitter = new vscode.EventEmitter<Node>();
   /** Fired when one node's children/label changed; trees forward it as a targeted refresh. */
   readonly onDidChangeNode = this.nodeEmitter.event;
+  private readonly pinsEmitter = new vscode.EventEmitter<void>();
+  /** Fired when the pin list or its order changed; only the Focus view redraws its root. */
+  readonly onDidChangePins = this.pinsEmitter.event;
   private readonly subs: vscode.Disposable[] = [];
   private _config: HubConfig;
   private _snapshot: Snapshot = emptySnapshot();
@@ -83,6 +90,7 @@ export class Hub implements vscode.Disposable {
     this.output = vscode.window.createOutputChannel('Claude Sessions');
     this._config = getConfig();
     this.reviewed = new ReviewedStore(context.globalState);
+    this.pins = new PinStore(context.globalState);
     this.showHiddenFiles = context.globalState.get<boolean>('sessionHub.showHidden', false);
     void vscode.commands.executeCommand('setContext', 'sessionHub.showHidden', this.showHiddenFiles);
     this.backend = this.createBackend();
@@ -102,6 +110,7 @@ export class Hub implements vscode.Disposable {
       this.terminals,
       this.emitter,
       this.nodeEmitter,
+      this.pinsEmitter,
       this.output,
       vscode.workspace.onDidChangeConfiguration(e => {
         if (!e.affectsConfiguration('sessionHub')) return;
@@ -166,7 +175,7 @@ export class Hub implements vscode.Disposable {
 
   itemContext(): ItemContext {
     const real = this._snapshot.realRoots;
-    return { roots: real.length ? [...real, ...this._config.roots] : this._config.roots, extensionUri: this.context.extensionUri, snapshot: this._snapshot };
+    return { roots: real.length ? [...real, ...this._config.roots] : this._config.roots, extensionUri: this.context.extensionUri, snapshot: this._snapshot, pinned: this.pins.paths() };
   }
 
   log(msg: string): void {
@@ -432,6 +441,31 @@ export class Hub implements vscode.Disposable {
       return { kind: 'fsDir', sessionId: parent.sessionId, root: parent.root, repoRoot, path: e.path, ignored: e.ignored };
     }
     return { kind: 'fsFile', sessionId: parent.sessionId, root: parent.root, path: e.path, ignored: e.ignored };
+  }
+
+  /**
+   * Focus view: pin/unpin/reorder. The UI updates at once (Focus root + the row whose pin icon
+   * flipped, when the caller has it); the globalState write finishes in the background, since
+   * under a starved extension host that round trip can take seconds.
+   */
+  async pin(path: string, kind: Pin['kind'], row?: Node): Promise<boolean> {
+    return this.afterPinChange(this.pins.add({ path, kind }), row);
+  }
+  async unpin(path: string, row?: Node): Promise<boolean> {
+    return this.afterPinChange(this.pins.remove(path), row);
+  }
+  async movePin(path: string, delta: -1 | 1): Promise<boolean> {
+    return this.afterPinChange(this.pins.move(path, delta));
+  }
+  async movePinBefore(path: string, before: string | null): Promise<boolean> {
+    return this.afterPinChange(this.pins.moveBefore(path, before));
+  }
+  private afterPinChange(result: { changed: boolean; saved: Promise<void> }, row?: Node): boolean {
+    if (!result.changed) return false;
+    this.pinsEmitter.fire();
+    if (row) this.nodeEmitter.fire(row);
+    result.saved.catch(err => this.log(`saving pins failed: ${(err as Error).message}`));
+    return true;
   }
 
   get showHidden(): boolean {

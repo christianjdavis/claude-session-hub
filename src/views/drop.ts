@@ -51,3 +51,43 @@ export class FsDropController implements vscode.TreeDragAndDropController<Node> 
     if (n > 0) this.hub.invalidateDir(dir);
   }
 }
+
+const PIN_MIME = 'application/vnd.code.tree.sessionhub.pin';
+
+/**
+ * Focus view: pinned repo/folder rows can be dragged onto each other to reorder; anything else
+ * dropped there (Finder files, Explorer paths) is an upload handled by the wrapped controller.
+ */
+export class PinDropController implements vscode.TreeDragAndDropController<Node> {
+  readonly dropMimeTypes = [PIN_MIME, 'text/uri-list', 'files'];
+  readonly dragMimeTypes = [PIN_MIME];
+
+  constructor(
+    private readonly hub: Hub,
+    private readonly inner: FsDropController
+  ) {}
+
+  handleDrag(sources: readonly Node[], dataTransfer: vscode.DataTransfer): void {
+    const paths: string[] = [];
+    for (const n of sources) {
+      if (n.kind !== 'repo' && n.kind !== 'folder') return;
+      const p = dirOf(n);
+      if (!p || !this.hub.pins.has(p)) return;
+      paths.push(p);
+    }
+    if (paths.length) dataTransfer.set(PIN_MIME, new vscode.DataTransferItem(paths));
+  }
+
+  async handleDrop(target: Node | undefined, dataTransfer: vscode.DataTransfer): Promise<void> {
+    const item = dataTransfer.get(PIN_MIME);
+    if (!item) return this.inner.handleDrop(target, dataTransfer);
+    const paths = (item.value as unknown[] | undefined) ?? [];
+    let before: string | null = null;
+    if (target) {
+      if (target.kind !== 'repo' && target.kind !== 'folder') return;
+      before = dirOf(target);
+      if (!before || !this.hub.pins.has(before)) return;
+    }
+    for (const p of paths) if (typeof p === 'string') await this.hub.movePinBefore(p, before);
+  }
+}

@@ -13,13 +13,26 @@ below it, then keeps a live queue of what needs you.
 | Section | Meaning | Source |
 | --- | --- | --- |
 | Needs input | Claude is blocked on a permission prompt, question, or dialog | `~/.claude/sessions/<pid>.json` `status: waiting` |
-| Completed · review | Claude finished a turn after your last prompt and you have not looked yet | registry `idle` + transcript `end_turn` after last human prompt |
-| Running | The model is working | registry `status: busy` |
+| Completed · review | Claude finished a turn after your last prompt and you have not looked yet | registry `idle` + transcript `end_turn` after last human prompt (the transcript wins over a registry entry that is stale) |
+| Running | The model is working | registry `status: busy`, or a prompt in the transcript newer than the registry's last update |
 | Idle | Live sessions waiting at the prompt with nothing new | registry `idle` |
 | Background jobs | `claude --bg` sessions and their state | `~/.claude/jobs/*/state.json` |
 | Outside workspace | Live sessions whose cwd is not under any root | |
 
 A review item clears when you focus its terminal, or via **Mark reviewed**.
+
+Recent Claude Code versions run an interactive conversation as two processes: a
+parked terminal UI and a background worker that does the work. The hub folds the
+pair into one session row (the worker's state, the UI's terminal), so a
+conversation never shows up as both a stuck "Running" session and a background
+job.
+
+**Focus**: the repos and folders you are actually working on, promoted by hand.
+The pin icon on a repo or folder row in All available (or right-click → **Pin to
+Focus**) adds it here with the same sessions and `Files` group; rows stay in the
+order you pinned them, and you can drag them or use **Move Up / Move Down** to
+reorder. Unpin from either view. Pins are saved across reloads and windows.
+Working stays a live-process view; Focus is the hand-picked project list.
 
 **All available**: every repo under the roots, with its recent sessions. The
 `+` icon on a repo row starts a session there; it asks for a name first (leave
