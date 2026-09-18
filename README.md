@@ -1,6 +1,7 @@
 # Claude Session Hub
 
-One VS Code window for every Claude Code session on the machine.
+One VS Code window for every Claude Code session on the machine: see what needs you,
+jump to it, and review what each session changed.
 
 Open VS Code on a parent folder such as `~/dev`. The extension finds every git
 repository below it and every Claude Code session whose working directory is
@@ -51,6 +52,15 @@ Working stays a live-process view; Focus is the hand-picked project list.
 it blank for an unnamed one). The window icon on a repo row
 (and **Open Repo in New Window** on sessions) opens that repo in its own VS Code
 window; if a window already has it open, VS Code focuses that one instead.
+
+**Staging and discarding without Claude.** Expanding **Files changed** looks like the
+Source Control view: **Staged Changes** (HEAD ↔ index) above **Changes** (index ↔ working
+tree, untracked files included), with a file edited on both sides of the index listed in
+both, and a **Committed** group for what the session's commits changed and left alone.
+Rows carry the Git view's buttons: **Stage** and **Discard** under Changes, **Unstage**
+under Staged Changes (Discard on an untracked file deletes it, after a confirmation). The
+group headers offer **Stage All / Discard All** and **Unstage All**; folder rows inside a
+group offer the same for their subtree. The lists re-read themselves right after each action.
 
 **Browsing and uploading files.** Every session row ends with a collapsed
 **Browse files** group rooted at its repo (or working directory), and every

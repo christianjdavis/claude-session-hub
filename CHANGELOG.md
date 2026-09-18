@@ -3,6 +3,14 @@
 All notable changes to Claude Session Hub. The version is the git tag; the section for a tag is
 used as its GitHub Release notes.
 
+## [0.2.0] - 2026-09-18
+
+- **Files changed** now mirrors the Source Control view: **Staged Changes** (HEAD ↔ index) above
+  **Changes** (index ↔ working tree, untracked included), plus **Committed** for what the
+  session's commits changed. Rows and group headers carry **Stage / Unstage / Discard** and
+  **Stage All / Unstage All / Discard All**, so working-tree changes can be handled without
+  asking Claude. Lists refresh right after each action.
+
 ## [0.1.0] - 2026-09-18
 
 First public release.
