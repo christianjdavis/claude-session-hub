@@ -1,0 +1,619 @@
+{
+  "name": "claude-session-hub",
+  "displayName": "Claude Session Hub",
+  "description": "System-wide Claude Code session manager: every repo, every session, one window, with a needs-input / review queue.",
+  "version": "0.1.0",
+  "publisher": "davisc",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "scripts": {
+    "compile": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "node esbuild.mjs --test && node dist/test.js",
+    "snapshot": "node esbuild.mjs --snapshot && node dist/snapshot.js",
+    "package": "vsce package --no-dependencies"
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "sessionHub",
+          "title": "Claude Sessions",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "sessionHub": [
+        {
+          "id": "sessionHub.working",
+          "name": "Working",
+          "contextualTitle": "Claude sessions · working"
+        },
+        {
+          "id": "sessionHub.repos",
+          "name": "All available",
+          "contextualTitle": "Claude sessions · all repos"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "sessionHub.working",
+        "contents": "No Claude Code sessions are running.\n[Start a session](command:sessionHub.newSessionPick)\n[Refresh](command:sessionHub.refresh)"
+      }
+    ],
+    "commands": [
+      {
+        "command": "sessionHub.switch",
+        "title": "Switch Session…",
+        "category": "Claude Sessions",
+        "icon": "$(list-selection)"
+      },
+      {
+        "command": "sessionHub.next",
+        "title": "Next Session",
+        "category": "Claude Sessions"
+      },
+      {
+        "command": "sessionHub.prev",
+        "title": "Previous Session",
+        "category": "Claude Sessions"
+      },
+      {
+        "command": "sessionHub.focusNextNeedsInput",
+        "title": "Jump to Session Needing Input",
+        "category": "Claude Sessions"
+      },
+      {
+        "command": "sessionHub.focus",
+        "title": "Open Session",
+        "category": "Claude Sessions",
+        "enablement": "false"
+      },
+      {
+        "command": "sessionHub.markReviewed",
+        "title": "Mark Reviewed",
+        "category": "Claude Sessions",
+        "icon": "$(check)"
+      },
+      {
+        "command": "sessionHub.markAllReviewed",
+        "title": "Mark All Reviewed",
+        "category": "Claude Sessions",
+        "icon": "$(check-all)"
+      },
+      {
+        "command": "sessionHub.newSession",
+        "title": "New Session Here…",
+        "category": "Claude Sessions",
+        "icon": "$(add)"
+      },
+      {
+        "command": "sessionHub.newSessionPick",
+        "title": "New Session in Repo…",
+        "category": "Claude Sessions",
+        "icon": "$(add)"
+      },
+      {
+        "command": "sessionHub.resumeHistorical",
+        "title": "Resume Session",
+        "icon": "$(debug-start)",
+        "category": "Claude Sessions"
+      },
+      {
+        "command": "sessionHub.openSession",
+        "title": "Open Session Terminal",
+        "icon": "$(terminal)",
+        "category": "Claude Sessions"
+      },
+      {
+        "command": "sessionHub.forkSession",
+        "title": "Fork Session (new id)",
+        "category": "Claude Sessions"
+      },
+      {
+        "command": "sessionHub.attachBg",
+        "title": "Attach to Background Session",
+        "category": "Claude Sessions"
+      },
+      {
+        "command": "sessionHub.bgLogs",
+        "title": "Show Background Session Logs",
+        "category": "Claude Sessions"
+      },
+      {
+        "command": "sessionHub.bgStop",
+        "title": "Stop Background Session",
+        "category": "Claude Sessions"
+      },
+      {
+        "command": "sessionHub.copySessionId",
+        "title": "Copy Session Id",
+        "category": "Claude Sessions"
+      },
+      {
+        "command": "sessionHub.openTranscript",
+        "title": "Open Transcript (JSONL)",
+        "category": "Claude Sessions"
+      },
+      {
+        "command": "sessionHub.revealCwd",
+        "title": "Reveal Working Directory in Finder",
+        "category": "Claude Sessions"
+      },
+      {
+        "command": "sessionHub.openRepoWindow",
+        "title": "Open Repo in New Window",
+        "icon": "$(empty-window)",
+        "category": "Claude Sessions"
+      },
+      {
+        "command": "sessionHub.openInOfficialExtension",
+        "title": "Open in Claude Code Extension Tab",
+        "category": "Claude Sessions"
+      },
+      {
+        "command": "sessionHub.refresh",
+        "title": "Refresh",
+        "category": "Claude Sessions",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "sessionHub.toggleTerminalLocation",
+        "title": "Toggle Terminal Location (Editor/Panel)",
+        "category": "Claude Sessions"
+      },
+      {
+        "command": "sessionHub.showLogs",
+        "title": "Show Session Hub Logs",
+        "category": "Claude Sessions"
+      },
+      {
+        "command": "sessionHub.openDiff",
+        "title": "Open Diff",
+        "category": "Claude Sessions"
+      },
+      {
+        "command": "sessionHub.openFile",
+        "title": "Open File",
+        "category": "Claude Sessions"
+      },
+      {
+        "command": "sessionHub.openAllDiffs",
+        "title": "Open All Diffs From This Turn",
+        "category": "Claude Sessions",
+        "icon": "$(diff-multiple)"
+      },
+      {
+        "command": "sessionHub.showSummary",
+        "title": "Show Session Summary",
+        "category": "Claude Sessions",
+        "icon": "$(book)"
+      },
+      {
+        "command": "sessionHub.uploadFiles",
+        "title": "Upload Files Here…",
+        "category": "Claude Sessions",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "sessionHub.openFileToSide",
+        "title": "Open to the Side",
+        "category": "Claude Sessions",
+        "icon": "$(split-horizontal)"
+      },
+      {
+        "command": "sessionHub.copyPath",
+        "title": "Copy Path",
+        "category": "Claude Sessions"
+      },
+      {
+        "command": "sessionHub.showHiddenFiles",
+        "title": "Show Ignored Files",
+        "category": "Claude Sessions",
+        "icon": "$(eye-closed)"
+      },
+      {
+        "command": "sessionHub.hideHiddenFiles",
+        "title": "Hide Ignored Files",
+        "category": "Claude Sessions",
+        "icon": "$(eye)"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "sessionHub.focus",
+          "when": "false"
+        },
+        {
+          "command": "sessionHub.markReviewed",
+          "when": "false"
+        },
+        {
+          "command": "sessionHub.newSession",
+          "when": "false"
+        },
+        {
+          "command": "sessionHub.resumeHistorical",
+          "when": "false"
+        },
+        {
+          "command": "sessionHub.openSession",
+          "when": "false"
+        },
+        {
+          "command": "sessionHub.forkSession",
+          "when": "false"
+        },
+        {
+          "command": "sessionHub.attachBg",
+          "when": "false"
+        },
+        {
+          "command": "sessionHub.bgLogs",
+          "when": "false"
+        },
+        {
+          "command": "sessionHub.bgStop",
+          "when": "false"
+        },
+        {
+          "command": "sessionHub.copySessionId",
+          "when": "false"
+        },
+        {
+          "command": "sessionHub.openTranscript",
+          "when": "false"
+        },
+        {
+          "command": "sessionHub.revealCwd",
+          "when": "false"
+        },
+        {
+          "command": "sessionHub.openRepoWindow",
+          "when": "false"
+        },
+        {
+          "command": "sessionHub.openInOfficialExtension",
+          "when": "false"
+        },
+        {
+          "command": "sessionHub.openDiff",
+          "when": "false"
+        },
+        {
+          "command": "sessionHub.openFile",
+          "when": "false"
+        },
+        {
+          "command": "sessionHub.openAllDiffs",
+          "when": "false"
+        },
+        {
+          "command": "sessionHub.openFileToSide",
+          "when": "false"
+        },
+        {
+          "command": "sessionHub.copyPath",
+          "when": "false"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "sessionHub.switch",
+          "when": "view == sessionHub.working",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sessionHub.markAllReviewed",
+          "when": "view == sessionHub.working",
+          "group": "navigation@2"
+        },
+        {
+          "command": "sessionHub.refresh",
+          "when": "view == sessionHub.working || view == sessionHub.repos",
+          "group": "navigation@9"
+        },
+        {
+          "command": "sessionHub.newSessionPick",
+          "when": "view == sessionHub.repos",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sessionHub.showHiddenFiles",
+          "when": "(view == sessionHub.working || view == sessionHub.repos) && !sessionHub.showHidden",
+          "group": "navigation@3"
+        },
+        {
+          "command": "sessionHub.hideHiddenFiles",
+          "when": "(view == sessionHub.working || view == sessionHub.repos) && sessionHub.showHidden",
+          "group": "navigation@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "sessionHub.showSummary",
+          "when": "viewItem =~ /^sh\\.(session(\\.\\w+)?|live|queue\\.(review|running|needsInput))$/",
+          "group": "inline@0"
+        },
+        {
+          "command": "sessionHub.openAllDiffs",
+          "when": "viewItem =~ /^sh\\.(session(\\.\\w+)?|live|queue\\.(review|running|needsInput))$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "sessionHub.markReviewed",
+          "when": "view == sessionHub.working && viewItem =~ /^sh\\.queue\\.review/",
+          "group": "inline@2"
+        },
+        {
+          "command": "sessionHub.markReviewed",
+          "when": "view == sessionHub.working && viewItem =~ /^sh\\.queue\\.review/",
+          "group": "1_act@1"
+        },
+        {
+          "command": "sessionHub.markAllReviewed",
+          "when": "viewItem == sh.section.review",
+          "group": "inline@1"
+        },
+        {
+          "command": "sessionHub.newSession",
+          "when": "viewItem == sh.repo || viewItem == sh.folder",
+          "group": "inline@1"
+        },
+        {
+          "command": "sessionHub.newSession",
+          "when": "viewItem == sh.repo || viewItem == sh.folder",
+          "group": "1_act@1"
+        },
+        {
+          "command": "sessionHub.revealCwd",
+          "when": "viewItem == sh.repo || viewItem == sh.folder",
+          "group": "2_nav@1"
+        },
+        {
+          "command": "sessionHub.openRepoWindow",
+          "when": "viewItem == sh.repo || viewItem == sh.folder",
+          "group": "inline@2"
+        },
+        {
+          "command": "sessionHub.openRepoWindow",
+          "when": "viewItem == sh.repo || viewItem == sh.folder || viewItem =~ /^sh\\.(session(\\.\\w+)?|live|queue\\.(review|running|needsInput))$/",
+          "group": "2_nav@2"
+        },
+        {
+          "command": "sessionHub.forkSession",
+          "when": "viewItem =~ /^sh\\.(session(\\.\\w+)?|live|queue\\.(review|running|needsInput))$/",
+          "group": "1_act@2"
+        },
+        {
+          "command": "sessionHub.resumeHistorical",
+          "when": "viewItem == sh.session.historical",
+          "group": "1_act@1"
+        },
+        {
+          "command": "sessionHub.resumeHistorical",
+          "when": "viewItem == sh.session.historical",
+          "group": "inline@-1"
+        },
+        {
+          "command": "sessionHub.openSession",
+          "when": "viewItem =~ /^sh\\.(session\\.live|live|queue\\.(review|running|needsInput))$/",
+          "group": "inline@-1"
+        },
+        {
+          "command": "sessionHub.openInOfficialExtension",
+          "when": "viewItem =~ /^sh\\.(session|live|queue)/ && sessionHub.officialExtension",
+          "group": "1_act@5"
+        },
+        {
+          "command": "sessionHub.copySessionId",
+          "when": "viewItem =~ /^sh\\.(session|live|queue|job)/",
+          "group": "2_nav@1"
+        },
+        {
+          "command": "sessionHub.openTranscript",
+          "when": "viewItem =~ /^sh\\.(session|live|queue)/",
+          "group": "2_nav@2"
+        },
+        {
+          "command": "sessionHub.revealCwd",
+          "when": "viewItem =~ /^sh\\.(session|live|queue)/",
+          "group": "2_nav@3"
+        },
+        {
+          "command": "sessionHub.attachBg",
+          "when": "viewItem =~ /^sh\\.(job|queue\\.review\\.job)/",
+          "group": "1_act@1"
+        },
+        {
+          "command": "sessionHub.bgLogs",
+          "when": "viewItem =~ /^sh\\.(job|queue\\.review\\.job)/",
+          "group": "1_act@2"
+        },
+        {
+          "command": "sessionHub.bgStop",
+          "when": "viewItem == sh.job.live",
+          "group": "1_act@3"
+        },
+        {
+          "command": "sessionHub.showSummary",
+          "when": "viewItem =~ /^sh\\.(session(\\.\\w+)?|live|queue\\.(review|running|needsInput))$/",
+          "group": "0_review@1"
+        },
+        {
+          "command": "sessionHub.openAllDiffs",
+          "when": "viewItem =~ /^sh\\.(session(\\.\\w+)?|live|queue\\.(review|running|needsInput))$/",
+          "group": "0_review@2"
+        },
+        {
+          "command": "sessionHub.openFile",
+          "when": "viewItem == sh.file.diff",
+          "group": "inline@1"
+        },
+        {
+          "command": "sessionHub.openFile",
+          "when": "viewItem =~ /^sh\\.file/",
+          "group": "1_act@1"
+        },
+        {
+          "command": "sessionHub.uploadFiles",
+          "when": "viewItem =~ /^sh\\.(fsDir|browseGroup|repo|folder)$/",
+          "group": "inline@3"
+        },
+        {
+          "command": "sessionHub.uploadFiles",
+          "when": "viewItem =~ /^sh\\.(fsDir|browseGroup|repo|folder)$/",
+          "group": "1_act@5"
+        },
+        {
+          "command": "sessionHub.newSession",
+          "when": "viewItem == sh.fsDir",
+          "group": "inline@1"
+        },
+        {
+          "command": "sessionHub.newSession",
+          "when": "viewItem == sh.fsDir",
+          "group": "1_act@1"
+        },
+        {
+          "command": "sessionHub.revealCwd",
+          "when": "viewItem =~ /^sh\\.(fsDir|fsFile|browseGroup)$/",
+          "group": "2_nav@1"
+        },
+        {
+          "command": "sessionHub.openFileToSide",
+          "when": "viewItem == sh.fsFile || viewItem =~ /^sh\\.file\\./",
+          "group": "1_act@1"
+        },
+        {
+          "command": "sessionHub.copyPath",
+          "when": "viewItem =~ /^sh\\.(fsDir|fsFile|browseGroup)$/ || viewItem =~ /^sh\\.file\\./",
+          "group": "2_nav@3"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "sessionHub.switch",
+        "key": "ctrl+shift+;",
+        "mac": "cmd+shift+;"
+      },
+      {
+        "command": "sessionHub.next",
+        "key": "ctrl+alt+]",
+        "mac": "ctrl+alt+]"
+      },
+      {
+        "command": "sessionHub.prev",
+        "key": "ctrl+alt+[",
+        "mac": "ctrl+alt+["
+      },
+      {
+        "command": "sessionHub.focusNextNeedsInput",
+        "key": "ctrl+alt+enter",
+        "mac": "ctrl+alt+enter"
+      }
+    ],
+    "configuration": {
+      "title": "Claude Sessions",
+      "properties": {
+        "sessionHub.claudePath": {
+          "type": "string",
+          "default": "claude",
+          "description": "Path or command used to launch Claude Code."
+        },
+        "sessionHub.terminalLocation": {
+          "type": "string",
+          "enum": [
+            "editor",
+            "panel"
+          ],
+          "default": "editor",
+          "description": "Where session terminals open: as editor tabs or in the terminal panel."
+        },
+        "sessionHub.roots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Directories to treat as the universe of repos (e.g. `~/dev`). Empty = the workspace folders of this window."
+        },
+        "sessionHub.repoScanDepth": {
+          "type": "number",
+          "default": 4,
+          "minimum": 1,
+          "maximum": 8,
+          "description": "How many directory levels below each root to scan for git repositories."
+        },
+        "sessionHub.maxAgeDays": {
+          "type": "number",
+          "default": 14,
+          "description": "Hide historical sessions older than this many days (live sessions always show)."
+        },
+        "sessionHub.maxPerRepo": {
+          "type": "number",
+          "default": 20,
+          "description": "Maximum historical sessions listed per repository."
+        },
+        "sessionHub.pollIntervalMs": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 1000,
+          "description": "Fallback poll interval while sessions are live (file watchers are primary)."
+        },
+        "sessionHub.clearReviewOnFocus": {
+          "type": "boolean",
+          "default": true,
+          "description": "Clear a \"completed · review\" item when its terminal gains focus."
+        },
+        "sessionHub.notifications.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show a VS Code toast when a session starts waiting for input or finishes a turn."
+        },
+        "sessionHub.adoptExternalTerminals": {
+          "type": "boolean",
+          "default": true,
+          "description": "Bind terminals where you started `claude` by hand to their sessions (via the process tree)."
+        },
+        "sessionHub.useWorker": {
+          "type": "boolean",
+          "default": true,
+          "description": "Scan transcripts and run git in a separate worker process so a busy extension host (other extensions' I/O) cannot slow the hub down. Turn off to run everything in-process."
+        },
+        "sessionHub.useOfficialExtensionWhenCwdMatches": {
+          "type": "boolean",
+          "default": false,
+          "description": "Open sessions in the official Claude Code extension tab instead of a terminal when the session cwd is a workspace folder."
+        },
+        "sessionHub.extraResumeArgs": {
+          "type": "string",
+          "default": "",
+          "description": "Extra CLI arguments appended to every `claude` launch (e.g. `--permission-mode auto`)."
+        }
+      }
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.95.0",
+    "@vscode/vsce": "^3.2.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0"
+  }
+}

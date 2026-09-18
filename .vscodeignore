@@ -1,0 +1,13 @@
+.vscode/**
+src/**
+scripts/**
+node_modules/**
+esbuild.mjs
+tsconfig.json
+**/*.map
+dist/test.js
+dist/snapshot.js
+dist/adopt-check.js
+dist/changes-check.js
+.gitignore
+*.vsix
