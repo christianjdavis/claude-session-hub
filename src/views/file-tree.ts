@@ -1,7 +1,8 @@
 import * as path from 'node:path';
 import type { ChangedFile } from '../sources/changes';
+import { INDEX_REF } from '../sources/changes';
 import { shortenHomePath } from '../paths';
-import type { Node } from './nodes';
+import type { Node, ScmGroupId } from './nodes';
 
 /** Above this many files the list is grouped by folder, like a pull request's file tree. */
 export const FOLDER_THRESHOLD = 20;
@@ -20,7 +21,7 @@ interface Dir {
  * nested folders with single-child chains compressed (`services/sites/amarillo/b2`). Files
  * outside the repo are grouped under their `~`-shortened directory.
  */
-export function fileTreeNodes(files: ChangedFile[], sessionId: string): Node[] {
+export function fileTreeNodes(files: ChangedFile[], sessionId: string, scope?: string): Node[] {
   if (files.length <= FOLDER_THRESHOLD) return files.map(file => ({ kind: 'file', file, sessionId }) as Node);
   const root: Dir = { name: '', dirs: new Map(), files: [] };
   for (const f of files) {
@@ -39,13 +40,34 @@ export function fileTreeNodes(files: ChangedFile[], sessionId: string): Node[] {
     }
     cur.files.push(f);
   }
-  const out = emit(root, '', sessionId);
+  const out = emit(root, '', sessionId, scope);
   // One folder at the top and nothing beside it: open it, the user would click it anyway.
   if (out.length === 1 && out[0]?.kind === 'fileFolder') out[0].expanded = true;
   return out;
 }
 
-function emit(dir: Dir, prefix: string, sessionId: string): Node[] {
+/**
+ * The Source Control view's layout for a session's "Files changed": **Staged Changes** (HEAD ↔
+ * index) above **Changes** (index ↔ working tree, untracked included), a file with edits on both
+ * sides of the index appearing in both, then whatever the session committed and left alone. A
+ * session outside git has nothing to stage, so its files stay a flat list.
+ */
+export function scmNodes(files: ChangedFile[], sessionId: string): Node[] {
+  const staged: ChangedFile[] = [];
+  const changes: ChangedFile[] = [];
+  const committed: ChangedFile[] = [];
+  const other: ChangedFile[] = [];
+  for (const f of files) {
+    if (f.staged) staged.push({ ...f, status: f.indexStatus ?? f.status, refs: { from: 'HEAD', to: INDEX_REF }, staged: true, unstaged: false });
+    if (f.unstaged) changes.push({ ...f, status: f.worktreeStatus ?? f.status, refs: { from: INDEX_REF, to: null }, staged: false, unstaged: true });
+    if (!f.staged && !f.unstaged) (f.inCommits ? committed : other).push(f);
+  }
+  if (!staged.length && !changes.length && !committed.length) return fileTreeNodes(other, sessionId);
+  const group = (g: ScmGroupId, list: ChangedFile[]): Node[] => (list.length ? [{ kind: 'scmGroup', sessionId, group: g, files: list, children: fileTreeNodes(list, sessionId, g) }] : []);
+  return [...group('staged', staged), ...group('changes', changes), ...group('committed', committed), ...group('other', other)];
+}
+
+function emit(dir: Dir, prefix: string, sessionId: string, scope?: string): Node[] {
   const folders: FolderNode[] = [];
   // Repo folders first, files outside the repo (`~/…`) last, otherwise alphabetical.
   const order = ([a]: [string, Dir], [b]: [string, Dir]) => Number(a.startsWith('~')) - Number(b.startsWith('~')) || a.localeCompare(b);
@@ -58,8 +80,8 @@ function emit(dir: Dir, prefix: string, sessionId: string): Node[] {
       label = `${label}/${cur.name}`;
     }
     const rel = prefix ? `${prefix}/${label}` : label;
-    const children = emit(cur, rel, sessionId);
-    folders.push({ kind: 'fileFolder', sessionId, label, rel, count: countFiles(cur), children, expanded: false });
+    const children = emit(cur, rel, sessionId, scope);
+    folders.push({ kind: 'fileFolder', sessionId, label, rel, count: countFiles(cur), children, expanded: false, ...(scope ? { scope } : {}) });
   }
   const files: FileNode[] = [...dir.files].sort((a, b) => a.path.localeCompare(b.path)).map(file => ({ kind: 'file', file, sessionId, inFolder: true }));
   return [...folders, ...files];

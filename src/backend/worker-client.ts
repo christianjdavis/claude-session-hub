@@ -1,7 +1,7 @@
 import { fork } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import type { Session, Snapshot } from '../model/types';
-import type { ChangedFile, Commit, SessionGroups } from '../sources/changes';
+import type { ChangedFile, Commit, FileStatus, SessionGroups, WorkingTreeOp } from '../sources/changes';
 import type { DirEntry, FsEntry } from '../sources/repos';
 import type { Backend, BackendMethod, BuildOptions, PushMessage, RpcRequest, RpcResponse } from './api';
 import { LocalBackend } from './local';
@@ -69,6 +69,9 @@ export class WorkerBackend implements Backend {
   }
   gitShow(repoRoot: string, ref: string, absPath: string): Promise<string> {
     return this.call('gitShow', [repoRoot, ref, absPath]);
+  }
+  gitApply(repoRoot: string, op: WorkingTreeOp, files: { path: string; status: FileStatus }[]): Promise<void> {
+    return this.call('gitApply', [repoRoot, op, files]);
   }
   processTree(): Promise<Map<number, number[]>> {
     return this.call('processTree', []);

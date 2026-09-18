@@ -24,7 +24,28 @@ export interface ChangedFile {
   inCommits?: boolean;
   /** Aggregate entries only: differs from HEAD in the working tree (uncommitted). */
   inWorkingTree?: boolean;
+  /** Working-tree entries: the index differs from HEAD, so there is something to unstage. */
+  staged?: boolean;
+  /** Working-tree entries: the working tree differs from the index (or the file is untracked), so there is something to stage or discard. */
+  unstaged?: boolean;
+  /** Working-tree entries: the change letter on each side of the index (`git status` X and Y columns). */
+  indexStatus?: FileStatus;
+  worktreeStatus?: FileStatus;
 }
+
+/** One `git status` entry: the collapsed letter plus each side of the index (null: no change on that side). */
+export interface WtStatus {
+  status: FileStatus;
+  staged: boolean;
+  unstaged: boolean;
+  index: FileStatus | null;
+  worktree: FileStatus | null;
+}
+
+/** Pseudo-ref for the index in `ChangedFile.refs` and `gitShow`, the way the SCM view diffs HEAD ↔ index ↔ working tree. */
+export const INDEX_REF = 'INDEX';
+
+export type WorkingTreeOp = 'stage' | 'unstage' | 'discard';
 
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 
@@ -78,7 +99,7 @@ const CD_RE = /(?:^|&&|\|\||;|\n)\s*cd\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g;
 const GIT_C_RE = /\bgit\s+-C\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g;
 
 const STATUS_TTL_MS = 5_000;
-const statusCache = new Map<string, { at: number; map: Map<string, FileStatus> }>();
+const statusCache = new Map<string, { at: number; map: Map<string, WtStatus> }>();
 
 const COMMIT_TTL_MS = 10_000;
 const commitCache = new Map<string, { at: number; commits: Commit[] }>();
@@ -195,7 +216,7 @@ async function subagentTranscripts(session: Session): Promise<string[]> {
  * here, its files are not walked), so new files at known levels show up without the full
  * untracked walk that makes `git status` slow in big repos. `statusFor` asks about specific paths.
  */
-export async function gitStatus(repoRoot: string, nowMs = Date.now()): Promise<Map<string, FileStatus>> {
+export async function gitStatus(repoRoot: string, nowMs = Date.now()): Promise<Map<string, WtStatus>> {
   const cached = statusCache.get(repoRoot);
   if (cached && nowMs - cached.at < STATUS_TTL_MS) return cached.map;
   const out = await run('git', ['-C', repoRoot, '--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=normal']);
@@ -205,8 +226,8 @@ export async function gitStatus(repoRoot: string, nowMs = Date.now()): Promise<M
 }
 
 /** Status of specific paths, including untracked ones (pathspec-limited, so cheap). */
-async function statusFor(repoRoot: string, absPaths: string[]): Promise<Map<string, FileStatus>> {
-  const map = new Map<string, FileStatus>();
+async function statusFor(repoRoot: string, absPaths: string[]): Promise<Map<string, WtStatus>> {
+  const map = new Map<string, WtStatus>();
   for (let i = 0; i < absPaths.length; i += 200) {
     const chunk = absPaths.slice(i, i + 200);
     const out = await run('git', ['-C', repoRoot, '--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--', ...chunk]);
@@ -215,8 +236,8 @@ async function statusFor(repoRoot: string, absPaths: string[]): Promise<Map<stri
   return map;
 }
 
-function parsePorcelain(out: string, repoRoot: string): Map<string, FileStatus> {
-  const map = new Map<string, FileStatus>();
+export function parsePorcelain(out: string, repoRoot: string): Map<string, WtStatus> {
+  const map = new Map<string, WtStatus>();
   const parts = out.split('\0');
   for (let i = 0; i < parts.length; i++) {
     const entry = parts[i];
@@ -233,7 +254,10 @@ function parsePorcelain(out: string, repoRoot: string): Map<string, FileStatus> 
     } else if (x === 'D' || y === 'D') status = 'D';
     else if (x === 'A' || y === 'A') status = 'A';
     else status = 'M';
-    map.set(path.join(repoRoot, rel), status);
+    // X is the index column, Y the working-tree column; an untracked file has nothing in the index.
+    const index = x === '?' || x === ' ' ? null : letter(x);
+    const worktree = y === '?' ? '?' : y === ' ' ? null : letter(y);
+    map.set(path.join(repoRoot, rel), { status, staged: index !== null, unstaged: worktree !== null, index, worktree });
   }
   return map;
 }
@@ -244,7 +268,7 @@ function parsePorcelain(out: string, repoRoot: string): Map<string, FileStatus> 
  * resolved to its own repo, so it still gets a git status and a diff instead of a plain open.
  */
 export async function changedFilesFor(session: Session): Promise<ChangedFile[]> {
-  const [scan, status] = await Promise.all([touchedFiles(session), session.repoRoot ? gitStatus(session.repoRoot) : Promise.resolve(new Map<string, FileStatus>())]);
+  const [scan, status] = await Promise.all([touchedFiles(session), session.repoRoot ? gitStatus(session.repoRoot) : Promise.resolve(new Map<string, WtStatus>())]);
   const { touches } = scan;
   const since = session.lastUserTs ?? scan.lastHumanTs ?? 0;
 
@@ -269,8 +293,8 @@ export async function changedFilesFor(session: Session): Promise<ChangedFile[]> 
     const r = await findRepoRoot(d, null);
     if (r && r !== home && !inHome(r)) workedIn.add(r);
   }));
-  const extra = new Map<string, FileStatus>();
-  const foreign = new Map<string, Map<string, FileStatus>>();
+  const extra = new Map<string, WtStatus>();
+  const foreign = new Map<string, Map<string, WtStatus>>();
   await Promise.all([
     ...[...byRoot].map(async ([r, paths]) => {
       for (const [p, st] of await statusFor(r, paths)) extra.set(p, st);
@@ -289,23 +313,24 @@ export async function changedFilesFor(session: Session): Promise<ChangedFile[]> 
     // Claude's own plans, memory notes and settings are not the user's work product; a copy the
     // session wrote into a repo is, and keeps its row.
     if (isUnder(claudeDir, p) && !rootOf.get(p)) continue;
-    let st: FileStatus = status.get(p) ?? extra.get(p) ?? 'clean';
+    const w = status.get(p) ?? extra.get(p);
+    let st: FileStatus = w?.status ?? 'clean';
     if (st === 'clean' && present.get(p) === false) st = 'missing';
     const repoRoot = status.has(p) ? home : rootOf.get(p) ?? home;
     // Committed and unchanged since: there is no diff to review. Files outside any repo stay,
     // since "clean" is all git can say about them and they are still worth opening.
     if (st === 'clean' && repoRoot) continue;
-    out.push({ path: p, repoRoot, status: st, thisTurn: ts >= since, lastEditTs: ts || null });
+    out.push({ path: p, repoRoot, status: st, thisTurn: ts >= since, lastEditTs: ts || null, ...sides(w) });
   }
   // Tracked working-tree changes the transcript did not record (e.g. made via Bash) still matter for review.
-  for (const [p, st] of status) {
+  for (const [p, w] of status) {
     if (touches.has(p)) continue;
-    out.push({ path: p, repoRoot: home, status: st, thisTurn: false, lastEditTs: null });
+    out.push({ path: p, repoRoot: home, status: w.status, thisTurn: false, lastEditTs: null, ...sides(w) });
   }
   for (const [r, map] of foreign) {
-    for (const [p, st] of map) {
+    for (const [p, w] of map) {
       if (touches.has(p)) continue;
-      out.push({ path: p, repoRoot: r, status: st, thisTurn: false, lastEditTs: null });
+      out.push({ path: p, repoRoot: r, status: w.status, thisTurn: false, lastEditTs: null, ...sides(w) });
     }
   }
   out.sort((a, b) => {
@@ -313,6 +338,19 @@ export async function changedFilesFor(session: Session): Promise<ChangedFile[]> 
     if ((a.lastEditTs ?? 0) !== (b.lastEditTs ?? 0)) return (b.lastEditTs ?? 0) - (a.lastEditTs ?? 0);
     return a.path.localeCompare(b.path);
   });
+  return out;
+}
+
+/** One porcelain column to a status letter (`T` type change and `U` conflict read as modified, `C` copy as rename). */
+function letter(c: string): FileStatus {
+  return c === 'A' ? 'A' : c === 'D' ? 'D' : c === 'R' || c === 'C' ? 'R' : 'M';
+}
+
+function sides(w: WtStatus | undefined): Pick<ChangedFile, 'staged' | 'unstaged' | 'indexStatus' | 'worktreeStatus'> {
+  if (!w) return {};
+  const out: Pick<ChangedFile, 'staged' | 'unstaged' | 'indexStatus' | 'worktreeStatus'> = { staged: w.staged, unstaged: w.unstaged };
+  if (w.index) out.indexStatus = w.index;
+  if (w.worktree) out.worktreeStatus = w.worktree;
   return out;
 }
 
@@ -441,6 +479,10 @@ export async function sessionFiles(session: Session, commits: Commit[]): Promise
       hit.thisTurn = w.thisTurn;
       hit.lastEditTs = w.lastEditTs;
       hit.inWorkingTree = w.status !== 'clean' && w.status !== 'missing';
+      if (w.staged !== undefined) hit.staged = w.staged;
+      if (w.unstaged !== undefined) hit.unstaged = w.unstaged;
+      if (w.indexStatus) hit.indexStatus = w.indexStatus;
+      if (w.worktreeStatus) hit.worktreeStatus = w.worktreeStatus;
       if (w.status === 'D' || w.status === 'missing') hit.status = 'D';
       continue;
     }
@@ -492,10 +534,82 @@ export function parseNameStatus(out: string, repoRoot: string, refs: { from: str
   return files;
 }
 
-/** Content of `rel` at `ref` in `repoRoot`; empty string when it does not exist there. */
+/** Content of `rel` at `ref` (or in the index for `INDEX_REF`) in `repoRoot`; empty string when it does not exist there. */
 export async function gitShow(repoRoot: string, ref: string, absPath: string): Promise<string> {
   const rel = path.relative(repoRoot, absPath).split(path.sep).join('/');
-  return (await run('git', ['-C', repoRoot, '--no-optional-locks', 'show', `${ref}:${rel}`])) ?? '';
+  return (await run('git', ['-C', repoRoot, '--no-optional-locks', 'show', ref === INDEX_REF ? `:${rel}` : `${ref}:${rel}`])) ?? '';
+}
+
+/**
+ * The SCM view's buttons for a session's working-tree rows: stage (`git add -A`), unstage
+ * (`git reset`), or discard (`git checkout` for tracked files, `git clean` for untracked ones,
+ * which deletes them). Rejects with git's stderr; the repo's status cache is dropped either way.
+ */
+export async function applyWorkingTreeOp(repoRoot: string, op: WorkingTreeOp, files: { path: string; status: FileStatus }[]): Promise<void> {
+  const rel = (p: string) => path.relative(repoRoot, p).split(path.sep).join('/');
+  const git = async (args: string[], paths: string[]) => {
+    for (let i = 0; i < paths.length; i += 200) await runStrict('git', ['-C', repoRoot, ...args, '--', ...paths.slice(i, i + 200)]);
+  };
+  try {
+    if (op === 'stage') await git(['add', '-A'], files.map(f => rel(f.path)));
+    else if (op === 'unstage') await git(['reset', '-q'], files.map(f => rel(f.path)));
+    else {
+      await git(['checkout', '-q'], files.filter(f => f.status !== '?').map(f => rel(f.path)));
+      await git(['clean', '-f', '-q'], files.filter(f => f.status === '?').map(f => rel(f.path)));
+    }
+  } finally {
+    invalidateRepo(repoRoot);
+  }
+}
+
+/**
+ * What `applyWorkingTreeOp` will leave behind, derived from the current entries, so the tree can
+ * move rows between Staged Changes and Changes the moment the button is clicked; a real
+ * `git status` reconciles afterwards. Files not in `paths` pass through untouched.
+ */
+export function predictWorkingTreeOp(files: ChangedFile[], op: WorkingTreeOp, paths: ReadonlySet<string>): ChangedFile[] {
+  const out: ChangedFile[] = [];
+  for (const f of files) {
+    if (!paths.has(f.path) || !f.repoRoot) {
+      out.push(f);
+      continue;
+    }
+    const n: ChangedFile = { ...f };
+    if (op === 'stage' && f.unstaged) {
+      if (f.indexStatus === 'A' && f.worktreeStatus === 'D') delete n.indexStatus; // added then deleted: nothing left to record
+      else n.indexStatus = f.worktreeStatus === '?' ? 'A' : f.worktreeStatus === 'D' ? 'D' : f.indexStatus === 'A' || f.indexStatus === 'R' ? f.indexStatus : 'M';
+      delete n.worktreeStatus;
+    } else if (op === 'unstage' && f.staged) {
+      n.worktreeStatus = f.indexStatus === 'A' ? '?' : f.indexStatus === 'D' ? 'D' : 'M';
+      delete n.indexStatus;
+    } else if (op === 'discard' && f.unstaged) {
+      delete n.worktreeStatus; // the working tree matches the index again (an untracked file is gone)
+    } else {
+      out.push(f);
+      continue;
+    }
+    n.staged = n.indexStatus !== undefined;
+    n.unstaged = n.worktreeStatus !== undefined;
+    if (!n.staged && !n.unstaged) {
+      if (!f.inCommits) continue; // no longer differs from HEAD: off the list
+      n.inWorkingTree = false;
+      n.status = f.status;
+    } else {
+      n.inWorkingTree = true;
+      n.status = n.indexStatus ?? n.worktreeStatus ?? f.status;
+    }
+    out.push(n);
+  }
+  return out;
+}
+
+function runStrict(cmd: string, args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(cmd, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) reject(new Error(String(stderr || err.message).trim()));
+      else resolve(stdout);
+    });
+  });
 }
 
 function run(cmd: string, args: string[]): Promise<string | null> {

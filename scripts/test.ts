@@ -8,9 +8,10 @@ import { MemoryStore, ReviewedStore } from '../src/state/reviewed-store';
 import { PinStore } from '../src/state/pin-store';
 import { formatRelativeTime, truncate } from '../src/format';
 import { isUnder, relToRoots } from '../src/paths';
-import { EMPTY_TREE, changedFilesFor, invalidateRepo, parseNameStatus, sessionCommits, sessionFiles } from '../src/sources/changes';
+import { EMPTY_TREE, applyWorkingTreeOp, changedFilesFor, predictWorkingTreeOp, invalidateRepo, parseNameStatus, parsePorcelain, sessionCommits, sessionFiles } from '../src/sources/changes';
 import type { PushMessage } from '../src/backend/api';
-import { fileTreeNodes } from '../src/views/file-tree';
+import { fileTreeNodes, scmNodes } from '../src/views/file-tree';
+import type { Node } from '../src/views/nodes';
 import { listEntries } from '../src/sources/repos';
 import { uploadTargets } from '../src/fs/upload-targets';
 import type { ChangedFile } from '../src/sources/changes';
@@ -350,6 +351,132 @@ test('sessionFiles: PR-style aggregate across commits + working tree, root commi
     const b = agg2.files.find(f => path.basename(f.path) === 'b.txt')!;
     assert.equal(b.inCommits, true);
     assert.equal(b.inWorkingTree, false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('parsePorcelain: index vs working-tree columns become staged/unstaged', () => {
+  const out = ['M  a.txt', ' M b.txt', 'MM c.txt', '?? d.txt', 'A  e.txt', ' D f.txt', 'R  g.txt', 'old.txt', 'dir/'].join('\0') + '\0';
+  const m = parsePorcelain(out, '/repo');
+  const flags = (n: string) => {
+    const w = m.get(`/repo/${n}`)!;
+    return `${w.status}${w.staged ? '+s' : ''}${w.unstaged ? '+u' : ''}`;
+  };
+  assert.equal(flags('a.txt'), 'M+s');
+  assert.equal(flags('b.txt'), 'M+u');
+  assert.equal(flags('c.txt'), 'M+s+u');
+  assert.equal(flags('d.txt'), '?+u');
+  assert.equal(flags('e.txt'), 'A+s');
+  assert.equal(flags('f.txt'), 'D+u');
+  assert.equal(flags('g.txt'), 'R+s');
+  assert.equal(m.has('/repo/dir'), false, 'untracked directories are skipped');
+  const c = m.get('/repo/c.txt')!;
+  assert.deepEqual([c.index, c.worktree], ['M', 'M']);
+  const d = m.get('/repo/d.txt')!;
+  assert.deepEqual([d.index, d.worktree], [null, '?']);
+  const f = m.get('/repo/f.txt')!;
+  assert.deepEqual([f.index, f.worktree], [null, 'D']);
+});
+
+test('predictWorkingTreeOp: rows move between sides the way git will move them', () => {
+  const file = (p: string, extra: Partial<ChangedFile>): ChangedFile => ({ path: `/r/${p}`, repoRoot: '/r', status: 'M', thisTurn: false, lastEditTs: null, ...extra });
+  const show = (list: ChangedFile[]) => list.map(f => `${path.basename(f.path)} ${f.status}${f.staged ? '+s' : ''}${f.unstaged ? '+u' : ''} i=${f.indexStatus ?? '-'} w=${f.worktreeStatus ?? '-'}`);
+  const wt = file('a.ts', { staged: false, unstaged: true, worktreeStatus: 'M' });
+  const untracked = file('n.ts', { status: '?', staged: false, unstaged: true, worktreeStatus: '?' });
+  const gone = file('d.ts', { status: 'D', staged: false, unstaged: true, worktreeStatus: 'D' });
+  const both = file('b.ts', { status: 'A', staged: true, unstaged: true, indexStatus: 'A', worktreeStatus: 'M' });
+  const committed = file('c.ts', { staged: false, unstaged: true, worktreeStatus: 'M', inCommits: true, inWorkingTree: true });
+  const all = new Set(['/r/a.ts', '/r/n.ts', '/r/d.ts', '/r/b.ts', '/r/c.ts']);
+
+  assert.deepEqual(show(predictWorkingTreeOp([wt, untracked, gone, both, committed], 'stage', all)), [
+    'a.ts M+s i=M w=-',
+    'n.ts A+s i=A w=-',
+    'd.ts D+s i=D w=-',
+    'b.ts A+s i=A w=-',
+    'c.ts M+s i=M w=-'
+  ]);
+  const staged = predictWorkingTreeOp([wt, untracked, gone, both], 'stage', all);
+  assert.deepEqual(show(predictWorkingTreeOp(staged, 'unstage', all)), ['a.ts M+u i=- w=M', 'n.ts ?+u i=- w=?', 'd.ts D+u i=- w=D', 'b.ts ?+u i=- w=?']);
+  // Discard: plain edits and untracked files leave the list, a half-staged file keeps its index side, a committed file stays as committed-only.
+  assert.deepEqual(show(predictWorkingTreeOp([wt, untracked, gone, both, committed], 'discard', all)), ['b.ts A+s i=A w=-', 'c.ts M i=- w=-']);
+  assert.equal(predictWorkingTreeOp([wt, untracked, gone, both, committed], 'discard', all)[1]!.inWorkingTree, false);
+  // Paths not named pass through untouched; unstaging something that is not staged is a no-op.
+  assert.deepEqual(predictWorkingTreeOp([wt, both], 'unstage', new Set(['/r/a.ts'])), [wt, both]);
+});
+
+test('scmNodes: Staged Changes above Changes, a file on both sides appears in both, committed-only last', () => {
+  const file = (p: string, extra: Partial<ChangedFile>): ChangedFile => ({ path: `/r/${p}`, repoRoot: '/r', status: 'M', thisTurn: false, lastEditTs: null, ...extra });
+  const nodes = scmNodes(
+    [
+      file('both.ts', { staged: true, unstaged: true, indexStatus: 'A', worktreeStatus: 'M', status: 'A' }),
+      file('idx.ts', { staged: true, unstaged: false, indexStatus: 'M' }),
+      file('wt.ts', { staged: false, unstaged: true, worktreeStatus: 'D', status: 'D' }),
+      file('new.ts', { staged: false, unstaged: true, worktreeStatus: '?', status: '?' }),
+      file('done.ts', { inCommits: true, inWorkingTree: false, refs: { from: 'abc', to: null } })
+    ],
+    's1'
+  );
+  const groups = nodes.map(n => (n.kind === 'scmGroup' ? `${n.group}:${n.children.map(c => (c.kind === 'file' ? `${c.file.status} ${path.basename(c.file.path)}` : '?')).join(',')}` : n.kind));
+  assert.deepEqual(groups, ['staged:A both.ts,M idx.ts', 'changes:M both.ts,D wt.ts,? new.ts', 'committed:M done.ts']);
+  const staged = nodes[0] as Extract<Node, { kind: 'scmGroup' }>;
+  const changes = nodes[1] as Extract<Node, { kind: 'scmGroup' }>;
+  const row = (g: Extract<Node, { kind: 'scmGroup' }>, i: number) => (g.children[i] as Extract<Node, { kind: 'file' }>).file;
+  assert.deepEqual(row(staged, 0).refs, { from: 'HEAD', to: 'INDEX' }, 'staged rows diff HEAD ↔ index');
+  assert.deepEqual(row(changes, 0).refs, { from: 'INDEX', to: null }, 'changes rows diff index ↔ working tree');
+  assert.equal(row(staged, 0).unstaged, false, 'a staged row only offers Unstage');
+  assert.equal(row(changes, 0).staged, false, 'a changes row only offers Stage / Discard');
+  assert.equal(staged.files.length, 2);
+
+  // Outside git nothing can be staged: plain rows, no groups.
+  const flat = scmNodes([file('notes.md', { repoRoot: null, status: 'clean' })], 's1');
+  assert.deepEqual(flat.map(n => n.kind), ['file']);
+});
+
+test('applyWorkingTreeOp: stage, unstage and discard behave like the SCM buttons', async () => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hub-op-')));
+  const git = (...args: string[]) => execFileSync('git', ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...args], { stdio: 'pipe' }).toString();
+  try {
+    git('init', '-q');
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'a1\n');
+    fs.writeFileSync(path.join(dir, 'gone.txt'), 'g\n');
+    git('add', '.');
+    git('commit', '-q', '-m', 'one');
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'a2\n'); // modified, unstaged
+    fs.writeFileSync(path.join(dir, 'new.txt'), 'n\n'); // untracked
+    fs.rmSync(path.join(dir, 'gone.txt')); // deleted, unstaged
+
+    const s = session({ id: 'op1', filePath: '', cwd: dir, cwdReal: dir, repoRoot: dir });
+    const state = async () => {
+      invalidateRepo(dir);
+      return (await changedFilesFor(s)).map(f => `${f.status} ${path.basename(f.path)}${f.staged ? '+s' : ''}${f.unstaged ? '+u' : ''}`).sort();
+    };
+    assert.deepEqual(await state(), ['? new.txt+u', 'D gone.txt+u', 'M a.txt+u']);
+
+    // Stage everything, deletion included: all three flip to index-only.
+    const all = (await changedFilesFor(s)).map(f => ({ path: f.path, status: f.status }));
+    await applyWorkingTreeOp(dir, 'stage', all);
+    assert.deepEqual(await state(), ['A new.txt+s', 'D gone.txt+s', 'M a.txt+s']);
+
+    // Unstage one: back to a working-tree change while the rest stay staged.
+    await applyWorkingTreeOp(dir, 'unstage', [{ path: path.join(dir, 'a.txt'), status: 'M' }]);
+    assert.deepEqual(await state(), ['A new.txt+s', 'D gone.txt+s', 'M a.txt+u']);
+
+    // Discard the working-tree edit: the file matches the index again.
+    await applyWorkingTreeOp(dir, 'discard', [{ path: path.join(dir, 'a.txt'), status: 'M' }]);
+    assert.equal(fs.readFileSync(path.join(dir, 'a.txt'), 'utf8'), 'a1\n');
+    assert.deepEqual(await state(), ['A new.txt+s', 'D gone.txt+s']);
+
+    // Unstage the rest, then discard: the deletion is restored and the untracked file is removed.
+    await applyWorkingTreeOp(dir, 'unstage', [{ path: path.join(dir, 'new.txt'), status: 'A' }, { path: path.join(dir, 'gone.txt'), status: 'D' }]);
+    assert.deepEqual(await state(), ['? new.txt+u', 'D gone.txt+u']);
+    await applyWorkingTreeOp(dir, 'discard', [{ path: path.join(dir, 'new.txt'), status: '?' }, { path: path.join(dir, 'gone.txt'), status: 'D' }]);
+    assert.deepEqual(await state(), []);
+    assert.equal(fs.existsSync(path.join(dir, 'new.txt')), false);
+    assert.equal(fs.readFileSync(path.join(dir, 'gone.txt'), 'utf8'), 'g\n');
+
+    // Failures surface git's message instead of being swallowed.
+    await assert.rejects(applyWorkingTreeOp(dir, 'discard', [{ path: path.join(dir, 'nope.txt'), status: 'M' }]), /nope\.txt/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

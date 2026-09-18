@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import type { Hub } from '../hub';
 import type { Node, SectionId } from './nodes';
-import { branchGroupItem, commitItem, commitsGroupItem, browseGroupItem, filesGroupItem, fileFolderItem, fileItem, fsDirItem, fsFileItem, jobItem, liveItem, messageItem, queueItem, sectionItem, sessionItem } from './nodes';
+import { branchGroupItem, commitItem, commitsGroupItem, browseGroupItem, filesGroupItem, fileFolderItem, fileItem, fsDirItem, fsFileItem, jobItem, liveItem, messageItem, queueItem, scmGroupItem, sectionItem, sessionItem } from './nodes';
 import { primaryLive } from '../model/types';
 
 /** "Working" view: the queue plus everything else that is alive right now. */
@@ -31,6 +31,8 @@ export class WorkingTreeProvider implements vscode.TreeDataProvider<Node> {
         return fileItem(node);
       case 'fileFolder':
         return fileFolderItem(node);
+      case 'scmGroup':
+        return scmGroupItem(node);
       case 'commitsGroup':
         return commitsGroupItem(node);
       case 'commit':
@@ -71,7 +73,7 @@ export class WorkingTreeProvider implements vscode.TreeDataProvider<Node> {
       }
       return sections;
     }
-    if (node.kind === 'fileFolder') return node.children;
+    if (node.kind === 'fileFolder' || node.kind === 'scmGroup') return node.children;
     if (node.kind === 'queue' || node.kind === 'live' || node.kind === 'session' || node.kind === 'commitsGroup' || node.kind === 'commit' || node.kind === 'branchGroup' || node.kind === 'filesGroup' || node.kind === 'browseGroup' || node.kind === 'fsDir') {
       return this.hub.children(node);
     }

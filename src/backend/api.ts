@@ -1,5 +1,5 @@
 import type { Session, Snapshot } from '../model/types';
-import type { ChangedFile, Commit, SessionGroups } from '../sources/changes';
+import type { ChangedFile, Commit, FileStatus, SessionGroups, WorkingTreeOp } from '../sources/changes';
 import type { DirEntry, FsEntry } from '../sources/repos';
 import type { BuildOptions } from '../state/store';
 
@@ -32,6 +32,8 @@ export interface Backend {
   commitFiles(commit: Commit): Promise<ChangedFile[]>;
   branchFiles(repoRoot: string, base: string): Promise<{ mergeBase: string; files: ChangedFile[] } | null>;
   gitShow(repoRoot: string, ref: string, absPath: string): Promise<string>;
+  /** Stage / unstage / discard working-tree changes to specific files (the SCM view's buttons). Rejects with git's message. */
+  gitApply(repoRoot: string, op: WorkingTreeOp, files: { path: string; status: FileStatus }[]): Promise<void>;
   processTree(): Promise<Map<number, number[]>>;
   /** Subdirectories of a folder, for browsing to places no session has run yet. */
   listDirs(dir: string): Promise<DirEntry[]>;
@@ -43,7 +45,7 @@ export interface Backend {
 }
 
 /** Methods callable over IPC; kept in one place so client and worker agree. */
-export const BACKEND_METHODS = ['build', 'markDirty', 'forget', 'invalidate', 'sessionGroups', 'commitFiles', 'branchFiles', 'gitShow', 'processTree', 'listDirs', 'listEntries'] as const;
+export const BACKEND_METHODS = ['build', 'markDirty', 'forget', 'invalidate', 'sessionGroups', 'commitFiles', 'branchFiles', 'gitShow', 'gitApply', 'processTree', 'listDirs', 'listEntries'] as const;
 export type BackendMethod = (typeof BACKEND_METHODS)[number];
 
 export interface RpcRequest {

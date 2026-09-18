@@ -15,6 +15,8 @@ import { FsDropController, PinDropController } from './views/drop';
 import { uploadInto } from './fs/upload';
 import { shortenHomePath } from './paths';
 import { formatRelativeTime } from './format';
+import type { ChangedFile, WorkingTreeOp } from './sources/changes';
+import { INDEX_REF } from './sources/changes';
 
 /** Serves `sessionhub-git:` documents: a file's content at a git ref, for diffs against the working tree. */
 const GIT_SCHEME = 'sessionhub-git';
@@ -252,11 +254,12 @@ export function activate(context: vscode.ExtensionContext): void {
     const show = (uri: vscode.Uri) => () => vscode.window.showTextDocument(uri, { preview: true });
     const key = `diff:${f.path}:${f.refs?.from ?? ''}:${f.refs?.to ?? ''}`;
     if (f.refs && f.repoRoot) {
-      // Commit or branch diff: compare two git refs (or a ref against the working tree).
+      // Commit, branch, or SCM-style diff: two git refs, the index, or the working tree on either side.
       const left = f.refs.from ? gitUri(f.repoRoot, f.path, f.refs.from) : null;
       const right = f.refs.to ? gitUri(f.repoRoot, f.path, f.refs.to) : fileUri;
-      const label = `${name} (${f.refs.from?.slice(0, 10) ?? '∅'} ↔ ${f.refs.to?.slice(0, 10) ?? 'working tree'})`;
-      if (f.status === 'A' || !left) return serialOpen(key, show(right));
+      const refName = (r: string | null) => (r === null ? 'Working Tree' : r === INDEX_REF ? 'Index' : r === 'HEAD' ? 'HEAD' : r.slice(0, 10));
+      const label = `${name} (${f.refs.from ? refName(f.refs.from) : '∅'} ↔ ${refName(f.refs.to)})`;
+      if (f.status === 'A' || f.status === '?' || !left) return serialOpen(key, show(right));
       if (f.status === 'D') return serialOpen(key, show(left));
       return serialOpen(key, () => vscode.commands.executeCommand('vscode.diff', left, right, label, { preview: true }));
     }
@@ -287,6 +290,58 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     for (const f of files.slice(0, 12)) await vscode.commands.executeCommand('sessionHub.openDiff', { kind: 'file', file: f, sessionId: s.id } satisfies Node);
   });
+  // Working-tree actions like the SCM view's buttons: stage, unstage, discard, for one file row or
+  // for everything uncommitted under a session's "Files changed". Nothing here goes through Claude.
+  const wtFilesOf = async (arg: unknown): Promise<ChangedFile[]> => {
+    const node = arg as Node | undefined;
+    if (node?.kind === 'file') return [node.file];
+    if (node?.kind === 'fileFolder') return filesUnder(node.children);
+    if (node?.kind === 'scmGroup') return node.files;
+    if (node?.kind === 'filesGroup') {
+      const s = hub.snapshot.sessions.get(node.sessionId);
+      return s ? (await hub.sessionGroups(s)).files : [];
+    }
+    return [];
+  };
+  const filesUnder = (nodes: Node[]): ChangedFile[] => nodes.flatMap(c => (c.kind === 'file' ? [c.file] : c.kind === 'fileFolder' ? filesUnder(c.children) : []));
+  const applyOp = async (arg: unknown, op: WorkingTreeOp): Promise<void> => {
+    const files = (await wtFilesOf(arg)).filter(f => f.repoRoot && (op === 'unstage' ? f.staged : f.unstaged));
+    if (files.length === 0) {
+      void vscode.window.showInformationMessage(op === 'unstage' ? 'Nothing is staged.' : 'No working-tree changes to ' + op + '.');
+      return;
+    }
+    if (op === 'discard') {
+      const untracked = files.filter(f => f.status === '?');
+      const one = files.length === 1 ? files[0] : null;
+      const name = (f: ChangedFile) => f.path.split('/').pop() ?? f.path;
+      const message = one
+        ? one.status === '?'
+          ? `Delete ${name(one)}?`
+          : `Discard changes in ${name(one)}?`
+        : untracked.length === files.length
+          ? `Delete ${files.length} untracked files?`
+          : `Discard changes in ${files.length} files${untracked.length ? ` (${untracked.length} untracked will be deleted)` : ''}?`;
+      const button = one ? (one.status === '?' ? 'Delete File' : 'Discard Changes') : 'Discard All Changes';
+      const ok = await vscode.window.showWarningMessage(message, { modal: true, detail: 'This cannot be undone: the working-tree changes are lost for good.' }, button);
+      if (ok !== button) return;
+    }
+    const byRepo = new Map<string, ChangedFile[]>();
+    for (const f of files) byRepo.set(f.repoRoot as string, [...(byRepo.get(f.repoRoot as string) ?? []), f]);
+    try {
+      for (const [root, list] of byRepo) await hub.gitApply(root, op, list.map(f => ({ path: f.path, status: f.status })));
+      const verb = op === 'stage' ? 'Staged' : op === 'unstage' ? 'Unstaged' : 'Discarded';
+      void vscode.window.setStatusBarMessage(`${verb} ${files.length === 1 ? shortenHomePath((files[0] as ChangedFile).path) : `${files.length} files`}`, 2500);
+    } catch (err) {
+      hub.log(`git ${op} failed: ${(err as Error).message}`);
+      void vscode.window.showErrorMessage(`git ${op} failed: ${(err as Error).message}`);
+    }
+  };
+  reg('sessionHub.stage', arg => applyOp(arg, 'stage'));
+  reg('sessionHub.unstage', arg => applyOp(arg, 'unstage'));
+  reg('sessionHub.discard', arg => applyOp(arg, 'discard'));
+  reg('sessionHub.stageAll', arg => applyOp(arg, 'stage'));
+  reg('sessionHub.unstageAll', arg => applyOp(arg, 'unstage'));
+  reg('sessionHub.discardAll', arg => applyOp(arg, 'discard'));
   reg('sessionHub.showSummary', async arg => {
     const id = idFrom(arg) ?? hub.terminals.activeSessionId();
     if (!id) return;

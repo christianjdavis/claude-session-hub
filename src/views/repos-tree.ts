@@ -4,7 +4,7 @@ import type { Hub } from '../hub';
 import type { Repo, Session } from '../model/types';
 import type { Node } from './nodes';
 import { relToRoots } from '../paths';
-import { branchGroupItem, commitItem, commitsGroupItem, browseGroupItem, filesGroupItem, fileFolderItem, fileItem, fsDirItem, fsFileItem, folderItem, liveFor, messageItem, repoItem, sectionItem, sessionItem } from './nodes';
+import { branchGroupItem, commitItem, commitsGroupItem, browseGroupItem, filesGroupItem, fileFolderItem, fileItem, fsDirItem, fsFileItem, folderItem, liveFor, messageItem, repoItem, scmGroupItem, sectionItem, sessionItem } from './nodes';
 
 interface FolderEntry {
   path: string;
@@ -43,6 +43,8 @@ export class ReposTreeProvider implements vscode.TreeDataProvider<Node> {
         return fileItem(node);
       case 'fileFolder':
         return fileFolderItem(node);
+      case 'scmGroup':
+        return scmGroupItem(node);
       case 'commitsGroup':
         return commitsGroupItem(node);
       case 'commit':
@@ -84,7 +86,7 @@ export class ReposTreeProvider implements vscode.TreeDataProvider<Node> {
       const sessions = node.repo.sessions.map(session => ({ kind: 'session', session, live: liveFor(snap, session.id) }) as Node);
       return [...sessions, { kind: 'browseGroup', sessionId: null, root: node.repo.root, repoRoot: node.repo.isGit ? node.repo.root : null }];
     }
-    if (node.kind === 'fileFolder') return node.children;
+    if (node.kind === 'fileFolder' || node.kind === 'scmGroup') return node.children;
     if (node.kind === 'session' || node.kind === 'commitsGroup' || node.kind === 'commit' || node.kind === 'branchGroup' || node.kind === 'filesGroup' || node.kind === 'browseGroup' || node.kind === 'fsDir') {
       return this.hub.children(node);
     }

@@ -222,6 +222,42 @@
         "icon": "$(diff-multiple)"
       },
       {
+        "command": "sessionHub.stage",
+        "title": "Stage Changes",
+        "category": "Claude Sessions",
+        "icon": "$(add)"
+      },
+      {
+        "command": "sessionHub.unstage",
+        "title": "Unstage Changes",
+        "category": "Claude Sessions",
+        "icon": "$(remove)"
+      },
+      {
+        "command": "sessionHub.discard",
+        "title": "Discard Changes",
+        "category": "Claude Sessions",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "sessionHub.stageAll",
+        "title": "Stage All Changes",
+        "category": "Claude Sessions",
+        "icon": "$(add)"
+      },
+      {
+        "command": "sessionHub.unstageAll",
+        "title": "Unstage All Changes",
+        "category": "Claude Sessions",
+        "icon": "$(remove)"
+      },
+      {
+        "command": "sessionHub.discardAll",
+        "title": "Discard All Changes",
+        "category": "Claude Sessions",
+        "icon": "$(discard)"
+      },
+      {
         "command": "sessionHub.showSummary",
         "title": "Show Session Summary",
         "category": "Claude Sessions",
@@ -337,6 +373,30 @@
         },
         {
           "command": "sessionHub.openInOfficialExtension",
+          "when": "false"
+        },
+        {
+          "command": "sessionHub.stage",
+          "when": "false"
+        },
+        {
+          "command": "sessionHub.unstage",
+          "when": "false"
+        },
+        {
+          "command": "sessionHub.discard",
+          "when": "false"
+        },
+        {
+          "command": "sessionHub.stageAll",
+          "when": "false"
+        },
+        {
+          "command": "sessionHub.unstageAll",
+          "when": "false"
+        },
+        {
+          "command": "sessionHub.discardAll",
           "when": "false"
         },
         {
@@ -522,13 +582,68 @@
         },
         {
           "command": "sessionHub.openFile",
-          "when": "viewItem == sh.file.diff",
+          "when": "viewItem =~ /^sh\\.file\\.diff/",
           "group": "inline@1"
         },
         {
-          "command": "sessionHub.openFile",
-          "when": "viewItem =~ /^sh\\.file/",
-          "group": "1_act@1"
+          "command": "sessionHub.discard",
+          "when": "viewItem =~ /^sh\\.file\\..*\\+unstaged/",
+          "group": "inline@2"
+        },
+        {
+          "command": "sessionHub.unstage",
+          "when": "viewItem =~ /^sh\\.file\\..*\\+staged/",
+          "group": "inline@3"
+        },
+        {
+          "command": "sessionHub.stage",
+          "when": "viewItem =~ /^sh\\.file\\..*\\+unstaged/",
+          "group": "inline@4"
+        },
+        {
+          "command": "sessionHub.stage",
+          "when": "viewItem =~ /^sh\\.file\\..*\\+unstaged/",
+          "group": "1_git@1"
+        },
+        {
+          "command": "sessionHub.unstage",
+          "when": "viewItem =~ /^sh\\.file\\..*\\+staged/",
+          "group": "1_git@2"
+        },
+        {
+          "command": "sessionHub.discard",
+          "when": "viewItem =~ /^sh\\.file\\..*\\+unstaged/",
+          "group": "1_git@3"
+        },
+        {
+          "command": "sessionHub.stageAll",
+          "when": "viewItem == sh.scm.changes",
+          "group": "inline@2"
+        },
+        {
+          "command": "sessionHub.discardAll",
+          "when": "viewItem == sh.scm.changes",
+          "group": "inline@1"
+        },
+        {
+          "command": "sessionHub.unstageAll",
+          "when": "viewItem == sh.scm.staged",
+          "group": "inline@1"
+        },
+        {
+          "command": "sessionHub.stageAll",
+          "when": "viewItem == sh.scm.changes || viewItem == sh.fileFolder",
+          "group": "1_git@1"
+        },
+        {
+          "command": "sessionHub.unstageAll",
+          "when": "viewItem == sh.scm.staged || viewItem == sh.fileFolder",
+          "group": "1_git@2"
+        },
+        {
+          "command": "sessionHub.discardAll",
+          "when": "viewItem == sh.scm.changes || viewItem == sh.fileFolder",
+          "group": "1_git@3"
         },
         {
           "command": "sessionHub.uploadFiles",

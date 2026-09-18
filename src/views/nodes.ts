@@ -6,6 +6,7 @@ import { escapeMarkdown, formatRelativeTime, truncate } from '../format';
 import { relToRoots, shortenHomePath } from '../paths';
 
 export type SectionId = 'needsInput' | 'review' | 'running' | 'idle' | 'bg' | 'outside' | 'other';
+export type ScmGroupId = 'staged' | 'changes' | 'committed' | 'other';
 
 export type Node =
   | { kind: 'section'; id: SectionId; label: string; count: number }
@@ -16,7 +17,9 @@ export type Node =
   | { kind: 'session'; session: Session; live: LiveSession | null }
   | { kind: 'job'; job: BgJob }
   | { kind: 'file'; file: ChangedFile; sessionId: string; inFolder?: boolean }
-  | { kind: 'fileFolder'; sessionId: string; label: string; rel: string; count: number; children: Node[]; expanded: boolean }
+  | { kind: 'fileFolder'; sessionId: string; label: string; rel: string; count: number; children: Node[]; expanded: boolean; scope?: string }
+  /** Source-control style buckets under "Files changed": staged, unstaged, committed-only, outside git. */
+  | { kind: 'scmGroup'; sessionId: string; group: ScmGroupId; files: ChangedFile[]; children: Node[] }
   | { kind: 'commitsGroup'; sessionId: string; commits: Commit[] }
   | { kind: 'commit'; sessionId: string; commit: Commit }
   | { kind: 'branchGroup'; sessionId: string; repoRoot: string; base: string; count: number | null }
@@ -233,7 +236,8 @@ export function fileItem(node: Extract<Node, { kind: 'file' }>): vscode.TreeItem
   const turn = f.thisTurn ? (aggregate ? 'this turn' : '') : f.lastEditTs ? 'earlier turn' : aggregate ? '' : 'uncommitted';
   item.description = [dir, f.status === 'clean' ? '' : STATUS_LABEL[f.status], where, turn].filter(Boolean).join(' · ');
   item.id = `file:${node.sessionId}:${f.refs ? `${f.refs.from ?? ''}..${f.refs.to ?? ''}:` : ''}${f.path}`;
-  item.contextValue = `sh.file.${f.status === '?' || f.status === 'missing' || f.status === 'clean' ? 'plain' : 'diff'}`;
+  // `+staged` / `+unstaged` drive the Stage / Unstage / Discard buttons (menu `when` clauses match on them).
+  item.contextValue = `sh.file.${f.status === '?' || f.status === 'missing' || f.status === 'clean' ? 'plain' : 'diff'}${f.staged ? '+staged' : ''}${f.unstaged ? '+unstaged' : ''}`;
   item.tooltip = `${shortenHomePath(f.path)}\n${STATUS_LABEL[f.status]}${where ? ` · ${where}` : ''}${f.lastEditTs ? ` · edited ${formatRelativeTime(f.lastEditTs)}` : ''}`;
   if (f.status !== 'clean') {
     const color = f.status === 'D' || f.status === 'missing' ? 'gitDecoration.deletedResourceForeground' : f.status === '?' || f.status === 'A' ? 'gitDecoration.untrackedResourceForeground' : 'gitDecoration.modifiedResourceForeground';
@@ -246,10 +250,27 @@ export function fileItem(node: Extract<Node, { kind: 'file' }>): vscode.TreeItem
 export function fileFolderItem(node: Extract<Node, { kind: 'fileFolder' }>): vscode.TreeItem {
   const item = new vscode.TreeItem(node.label, node.expanded ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed);
   item.description = `${node.count} file${node.count === 1 ? '' : 's'}`;
-  item.id = `dir:${node.sessionId}:${node.rel}`;
+  item.id = `dir:${node.sessionId}:${node.scope ?? ''}:${node.rel}`;
   item.contextValue = 'sh.fileFolder';
   item.iconPath = vscode.ThemeIcon.Folder;
   item.tooltip = node.rel;
+  return item;
+}
+
+const SCM_LABEL: Record<ScmGroupId, string> = { staged: 'Staged Changes', changes: 'Changes', committed: 'Committed', other: 'Other files' };
+const SCM_TOOLTIP: Record<ScmGroupId, string> = {
+  staged: 'In the index, ready to commit (HEAD ↔ index). Unstage to move a file back to Changes.',
+  changes: 'Working-tree edits not yet staged, untracked files included (index ↔ working tree). Stage to move a file up; Discard throws the edit away.',
+  committed: 'Changed by a commit made during this session and unchanged since.',
+  other: 'Edited by this session outside any git repository.'
+};
+
+export function scmGroupItem(node: Extract<Node, { kind: 'scmGroup' }>): vscode.TreeItem {
+  const item = new vscode.TreeItem(SCM_LABEL[node.group], vscode.TreeItemCollapsibleState.Expanded);
+  item.description = String(node.files.length);
+  item.id = `scm:${node.sessionId}:${node.group}`;
+  item.contextValue = `sh.scm.${node.group}`;
+  item.tooltip = SCM_TOOLTIP[node.group];
   return item;
 }
 

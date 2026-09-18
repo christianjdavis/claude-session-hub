@@ -2,8 +2,8 @@ import * as path from 'node:path';
 import type { Session, Snapshot } from '../model/types';
 import { emptySnapshot, primaryLive } from '../model/types';
 import { projectsDir } from '../paths';
-import { branchFiles, commitFiles, gitShow, invalidateAll, invalidateRepo, sessionGroups } from '../sources/changes';
-import type { ChangedFile, Commit, SessionGroups } from '../sources/changes';
+import { applyWorkingTreeOp, branchFiles, commitFiles, gitShow, invalidateAll, invalidateRepo, sessionGroups } from '../sources/changes';
+import type { ChangedFile, Commit, FileStatus, SessionGroups, WorkingTreeOp } from '../sources/changes';
 import { processTree } from '../sources/process-tree';
 import { clearRepoCache, listDirs, listEntries } from '../sources/repos';
 import type { DirEntry, FsEntry } from '../sources/repos';
@@ -78,6 +78,11 @@ export class LocalBackend implements Backend {
   }
   gitShow(repoRoot: string, ref: string, absPath: string): Promise<string> {
     return this.timed(() => gitShow(repoRoot, ref, absPath));
+  }
+  async gitApply(repoRoot: string, op: WorkingTreeOp, files: { path: string; status: FileStatus }[]): Promise<void> {
+    await this.timed(() => applyWorkingTreeOp(repoRoot, op, files));
+    // The pushed groups of every session in that repo are stale now; the next prefetch pass recomputes them.
+    for (const s of this.last.sessions.values()) if (s.repoRoot === repoRoot) this.pushed.delete(s.id);
   }
   processTree(): Promise<Map<number, number[]>> {
     return this.timed(() => processTree());

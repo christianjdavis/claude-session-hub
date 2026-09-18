@@ -13,11 +13,12 @@ import { deriveQueue } from './state/queue';
 import { TerminalManager } from './terminals/manager';
 import type { ItemContext, Node } from './views/nodes';
 import { sessionOf } from './views/nodes';
-import { fileTreeNodes } from './views/file-tree';
+import { fileTreeNodes, scmNodes } from './views/file-tree';
 import type { Backend, PushMessage } from './backend/api';
 import { LocalBackend } from './backend/local';
 import { WorkerBackend } from './backend/worker-client';
-import type { ChangedFile, SessionGroups } from './sources/changes';
+import type { ChangedFile, FileStatus, SessionGroups, WorkingTreeOp } from './sources/changes';
+import { predictWorkingTreeOp } from './sources/changes';
 import type { DirEntry, FsEntry } from './sources/repos';
 
 const REGISTRY_DEBOUNCE_MS = 300;
@@ -74,6 +75,8 @@ export class Hub implements vscode.Disposable {
   private prevQueue: Map<string, QueueItem['kind']> | null = null;
   private watchers: vscode.Disposable[] = [];
   private readonly childCache = new Map<string, ChildCache>();
+  /** Last aggregate "Files changed" list per session: the input for optimistic stage/unstage/discard updates. */
+  private readonly filesBySession = new Map<string, ChangedFile[]>();
   /** Directory listings for browsing folders; cheap to recompute, so a short TTL. */
   private readonly dirCache = new Map<string, { at: number; dirs: DirEntry[] }>();
   private lagTimer: ReturnType<typeof setInterval> | undefined;
@@ -413,11 +416,12 @@ export class Hub implements vscode.Disposable {
         const session = this._snapshot.sessions.get(node.sessionId);
         if (!session) return [];
         const g = await this.backend.sessionGroups(session);
+        this.filesBySession.set(session.id, g.files);
         if (node.count !== g.files.length) {
           node.count = g.files.length;
           this.nodeEmitter.fire(node);
         }
-        return fileNodesOf(g.files, node.sessionId);
+        return scmNodes(g.files, node.sessionId);
       }
       case 'browseGroup':
         return this.entryNodes(node.root, node);
@@ -523,7 +527,8 @@ export class Hub implements vscode.Disposable {
     }
     const browseRoot = session.repoRoot ?? session.cwdReal ?? session.cwd;
     if (browseRoot) out.push({ kind: 'browseGroup', sessionId: session.id, root: browseRoot, repoRoot: session.repoRoot ?? null });
-    this.seed(`files:${session.id}`, fileNodesOf(g.files, session.id), key);
+    this.filesBySession.set(session.id, g.files);
+    this.seed(`files:${session.id}`, scmNodes(g.files, session.id), key);
     if (session.repoRoot) {
       this.seed(`commits:${session.id}`, g.commits.map(commit => ({ kind: 'commit', sessionId: session.id, commit }) as Node), g.commits.map(c => c.sha).join(','));
       for (const c of g.commits) if (c.files) this.seed(`commit:${session.id}:${c.sha}`, fileNodesOf(c.files, session.id), 'immutable');
@@ -547,7 +552,7 @@ export class Hub implements vscode.Disposable {
     if (childrenFingerprint(nodes) === childrenFingerprint(existing.nodes)) return;
     existing.nodes = nodes;
     for (const p of existing.parents) {
-      if (p.kind === 'filesGroup') p.count = nodes.length;
+      if (p.kind === 'filesGroup') p.count = distinctFiles(nodes);
       this.nodeEmitter.fire(p);
     }
   }
@@ -591,6 +596,66 @@ export class Hub implements vscode.Disposable {
   }
   gitShow(repoRoot: string, ref: string, absPath: string): Promise<string> {
     return this.backend.gitShow(repoRoot, ref, absPath);
+  }
+
+  /**
+   * Stage / unstage / discard from a file row. The rows move at once (predicted from what is
+   * already known), git runs in the worker, then a real `git status` reconciles the lists in
+   * the background; a failed command re-reads them instead of leaving the guess on screen.
+   */
+  async gitApply(repoRoot: string, op: WorkingTreeOp, files: { path: string; status: FileStatus }[]): Promise<void> {
+    const paths = new Set(files.map(f => f.path));
+    const touched = this.predictGitViews(repoRoot, op, paths);
+    try {
+      await this.backend.gitApply(repoRoot, op, files);
+    } catch (err) {
+      this.refreshGitViews(repoRoot);
+      throw err;
+    }
+    for (const id of touched) {
+      const entry = this.childCache.get(id);
+      if (!entry) continue;
+      // Wait for any re-validation already running (it may have read the tree before our change), then re-read.
+      void (entry.inflight ?? Promise.resolve()).then(() => {
+        const cur = this.childCache.get(id);
+        const parent = cur?.parents[cur.parents.length - 1];
+        if (!cur || !parent) return;
+        const node = this.rebind(parent);
+        if (!node) return;
+        cur.at = 0;
+        this.revalidate(id, node, this.freshnessKey(node));
+      });
+    }
+  }
+
+  /** Apply the predicted outcome of `op` to every session list that shows `repoRoot`; returns the cache ids touched. */
+  private predictGitViews(repoRoot: string, op: WorkingTreeOp, paths: ReadonlySet<string>): string[] {
+    const touched: string[] = [];
+    for (const [sessionId, files] of this.filesBySession) {
+      if (!files.some(f => f.repoRoot === repoRoot && paths.has(f.path))) continue;
+      const next = predictWorkingTreeOp(files, op, paths);
+      this.filesBySession.set(sessionId, next);
+      const id = `files:${sessionId}`;
+      const entry = this.childCache.get(id);
+      if (!entry) continue;
+      this.seed(id, scmNodes(next, sessionId), entry.key);
+      touched.push(id);
+    }
+    return touched;
+  }
+
+  /**
+   * Forget the file lists that show `repoRoot`'s working tree and redraw the trees, so VS Code
+   * re-asks for them and gets a fresh `git status` (the same route an upload takes for a folder).
+   */
+  private refreshGitViews(repoRoot: string): void {
+    for (const [id, entry] of this.childCache) {
+      if (!id.startsWith('files:') && !id.startsWith('branch:')) continue;
+      const s = this._snapshot.sessions.get(id.slice(id.indexOf(':') + 1));
+      const shows = s?.repoRoot === repoRoot || entry.nodes.some(n => n.kind === 'file' && n.file.repoRoot === repoRoot);
+      if (shows) this.childCache.delete(id);
+    }
+    this.emitter.fire(this._snapshot);
   }
 
   /** Focus handler: clear the review item for the session the user just looked at. */
@@ -722,7 +787,7 @@ export function childrenFingerprint(nodes: Node[]): string {
     .map(n => {
       switch (n.kind) {
         case 'file':
-          return `f:${n.file.path}:${n.file.status}:${n.file.thisTurn ? 1 : 0}:${n.file.refs?.from ?? ''}:${n.file.inCommits ? 1 : 0}${n.file.inWorkingTree ? 1 : 0}`;
+          return `f:${n.file.path}:${n.file.status}:${n.file.thisTurn ? 1 : 0}:${n.file.refs?.from ?? ''}:${n.file.inCommits ? 1 : 0}${n.file.inWorkingTree ? 1 : 0}${n.file.staged ? 1 : 0}${n.file.unstaged ? 1 : 0}`;
         case 'commitsGroup':
           return `c:${n.commits.map(c => c.sha).join(',')}`;
         case 'branchGroup':
@@ -733,6 +798,8 @@ export function childrenFingerprint(nodes: Node[]): string {
           return `k:${n.commit.sha}`;
         case 'fileFolder':
           return `d:${n.rel}:${n.count}:${childrenFingerprint(n.children)}`;
+        case 'scmGroup':
+          return `scm:${n.group}:${childrenFingerprint(n.children)}`;
         case 'browseGroup':
           return `g:${n.root}`;
         case 'fsDir':
@@ -746,6 +813,19 @@ export function childrenFingerprint(nodes: Node[]): string {
       }
     })
     .join('|');
+}
+
+/** Files under a "Files changed" list, counting a path once even when it sits in both Staged Changes and Changes. */
+function distinctFiles(nodes: Node[]): number {
+  const paths = new Set<string>();
+  const walk = (list: Node[]) => {
+    for (const n of list) {
+      if (n.kind === 'file') paths.add(n.file.path);
+      else if (n.kind === 'fileFolder' || n.kind === 'scmGroup') walk(n.children);
+    }
+  };
+  walk(nodes);
+  return paths.size;
 }
 
 function fileNodesOf(files: ChangedFile[], sessionId: string): Node[] {
