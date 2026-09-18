@@ -2,7 +2,7 @@
   "name": "claude-session-hub",
   "displayName": "Claude Session Hub",
   "description": "System-wide Claude Code session manager: every repo, every session, one window, with a needs-input / review queue.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "davisc",
   "license": "MIT",
   "repository": {
