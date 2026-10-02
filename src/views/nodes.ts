@@ -332,7 +332,6 @@ export function fsDirItem(node: Extract<Node, { kind: 'fsDir' }>): vscode.TreeIt
   const item = new vscode.TreeItem(vscode.Uri.file(node.path), vscode.TreeItemCollapsibleState.Collapsed);
   item.id = `fsdir:${node.path}${node.sessionId ? `:${node.sessionId}` : ''}`;
   item.contextValue = 'sh.fsDir';
-  if (node.ignored) item.description = 'ignored';
   item.tooltip = shortenHomePath(node.path);
   return item;
 }
@@ -341,7 +340,6 @@ export function fsFileItem(node: Extract<Node, { kind: 'fsFile' }>): vscode.Tree
   const item = new vscode.TreeItem(vscode.Uri.file(node.path), vscode.TreeItemCollapsibleState.None);
   item.id = `fsfile:${node.path}${node.sessionId ? `:${node.sessionId}` : ''}`;
   item.contextValue = 'sh.fsFile';
-  if (node.ignored) item.description = 'ignored';
   item.tooltip = shortenHomePath(node.path);
   item.command = { command: 'vscode.open', title: 'Open', arguments: [vscode.Uri.file(node.path), { preview: true }] };
   return item;

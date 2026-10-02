@@ -65,9 +65,10 @@ group offer the same for their subtree. The lists re-read themselves right after
 **Browsing and uploading files.** Every session row ends with a collapsed
 **Browse files** group rooted at its repo (or working directory), and every
 repo/folder row in All available has a **Files** group: the whole tree, not only
-what the session changed, so any file can be opened. Dotfiles, build output
-(`node_modules`, `dist`, `.venv`, …) and `.gitignore`d paths are hidden; the eye
-icon in the view title shows them, marked `ignored`. The upload icon on a
+what the session changed, so any file can be opened. Like the Explorer, dotfiles
+are listed and `.gitignore`d paths appear dimmed; only `.git` and build or
+dependency folders (`node_modules`, `dist`, `.venv`, …) are left out, and the eye
+icon in the view title shows them. The upload icon on a
 folder-like row (or dropping files from Finder or the Explorer onto it) copies
 them into that directory, asking before anything is replaced. Directory
 listings are read in the worker and cached; a live session's activity re-reads
@@ -79,7 +80,9 @@ Clicking a session opens (or focuses) a terminal running `claude --resume <id>`
 in that session's own working directory. Terminals open as editor tabs by
 default (`sessionHub.terminalLocation`), so you tab between sessions like
 files. Terminals where you started `claude` by hand are adopted automatically
-by matching the process tree to the registry.
+by matching the process tree to the registry. Session terminals survive a
+window reload: VS Code restores them with Claude still running and the hub
+re-binds them the same way.
 
 | Command | Default keys |
 | --- | --- |
@@ -121,7 +124,11 @@ extension host's event loop being busy with other extensions (`host loop lag`
 is reported when that exceeds half a second, and polling backs off while it
 lasts). This typically happens for the first two or three minutes after a
 window reload while language extensions activate; it is not something this
-extension can shorten.
+extension can shorten. If the lag never subsides, VS Code's main log (or
+**Developer: Show Running Extensions**) names the extension responsible. When
+the host is blocked for more than a third of a minute, the extension says so
+once, with a **Show Running Extensions** button; "Don't show again" silences
+it on that machine.
 
 ## Development
 

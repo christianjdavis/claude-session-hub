@@ -194,7 +194,9 @@ export class TerminalManager implements vscode.Disposable {
 
       // Same terminals, same claude processes as last time: nothing new to match.
       const pids = await Promise.all(candidates.map(t => this.shellPidOf(t)));
-      const signature = `${pids.filter(Boolean).sort().join(',')}|${[...livePids.keys()].sort().join(',')}`;
+      // Session ids are part of it: `/resume` inside a running claude swaps the id under the same pid.
+      const liveKeys = [...livePids.entries()].map(([pid, l]) => `${pid}=${l.sessionId}`).sort();
+      const signature = `${pids.filter(Boolean).sort().join(',')}|${liveKeys.join(',')}`;
       if (signature === this.lastSignature) return;
       this.lastSignature = signature;
 
@@ -261,8 +263,9 @@ export class TerminalManager implements vscode.Disposable {
       name: truncateName(name),
       cwd: vscode.Uri.file(cwd),
       iconPath: new vscode.ThemeIcon('sparkle'),
-      location,
-      isTransient: true
+      location
+      // Not transient: VS Code restores the terminal (and the running claude) after a window
+      // reload, and adopt() re-binds it through the process tree.
     });
     this.bindings.set(term, { sessionId, pid: null, cwd, createdAt: Date.now(), pending: true, stale: false });
     if (sessionId) this.bySession.set(sessionId, term);

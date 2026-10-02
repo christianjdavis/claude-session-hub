@@ -12,6 +12,7 @@ import { FocusTreeProvider } from './views/focus-tree';
 import type { Node } from './views/nodes';
 import { dirOf, jobOf, sessionIdOf, sessionOf } from './views/nodes';
 import { FsDropController, PinDropController } from './views/drop';
+import { IgnoredDecorationProvider } from './views/ignored-decorations';
 import { uploadInto } from './fs/upload';
 import { shortenHomePath } from './paths';
 import { formatRelativeTime } from './format';
@@ -36,7 +37,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const reposView = vscode.window.createTreeView('sessionHub.repos', { treeDataProvider: repos, showCollapseAll: true, dragAndDropController });
   const focus = new FocusTreeProvider(hub, repos);
   const focusView = vscode.window.createTreeView('sessionHub.focus', { treeDataProvider: focus, showCollapseAll: true, dragAndDropController: new PinDropController(hub, dragAndDropController) });
-  context.subscriptions.push(workingView, focusView, reposView, new HubStatusBar(hub));
+  context.subscriptions.push(workingView, focusView, reposView, new HubStatusBar(hub), vscode.window.registerFileDecorationProvider(new IgnoredDecorationProvider(hub)));
 
   context.subscriptions.push(
     hub.onDidChange(snap => {

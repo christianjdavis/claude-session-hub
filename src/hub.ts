@@ -8,6 +8,7 @@ import { displayName, fingerprint, primaryLive } from './model/types';
 import { jobsDir, projectsDir, sessionsDir } from './paths';
 import { ReviewedStore } from './state/reviewed-store';
 import { PinStore } from './state/pin-store';
+import { LagWindow } from './state/lag-window';
 import type { Pin } from './state/pin-store';
 import { deriveQueue } from './state/queue';
 import { TerminalManager } from './terminals/manager';
@@ -30,6 +31,9 @@ const REVALIDATE_MIN_MS = 5_000;
 /** Host event-loop lag above which a refresh line reports it, and above which polling backs off. */
 const LAG_REPORT_MS = 500;
 const LAG_BACKOFF_MS = 1_000;
+/** Host blocked for STARVED_MS within LAG_WINDOW_MS: warn once that another extension is busy. */
+const LAG_WINDOW_MS = 60_000;
+const STARVED_MS = 20_000;
 const POLL_BACKOFF_MAX = 6;
 const DIR_TTL_MS = 60_000;
 
@@ -59,6 +63,11 @@ export class Hub implements vscode.Disposable {
   private readonly pinsEmitter = new vscode.EventEmitter<void>();
   /** Fired when the pin list or its order changed; only the Focus view redraws its root. */
   readonly onDidChangePins = this.pinsEmitter.event;
+  private readonly ignoredEmitter = new vscode.EventEmitter<vscode.Uri[] | undefined>();
+  /** Fired when the set of ignored (dimmed) paths known to the file browser changed. */
+  readonly onDidChangeIgnored = this.ignoredEmitter.event;
+  /** Absolute paths the file browser has listed as ignored; the decoration provider dims them. */
+  private readonly ignoredPaths = new Set<string>();
   private readonly subs: vscode.Disposable[] = [];
   private _config: HubConfig;
   private _snapshot: Snapshot = emptySnapshot();
@@ -82,9 +91,13 @@ export class Hub implements vscode.Disposable {
   private lagTimer: ReturnType<typeof setInterval> | undefined;
   private lagExpected = 0;
   private lagMax = 0;
+  /** Cumulative host loop lag since activation; `children` logs the slice it waited through. */
+  private lagTotal = 0;
+  private readonly lagWindow = new LagWindow(LAG_WINDOW_MS);
+  private starvedWarned = false;
   /** Poll interval multiplier while the extension host is starved (other extensions activating). */
   private pollBackoff = 1;
-  /** File browser: show dotfiles, build output and `.gitignore`d entries. Persisted across windows. */
+  /** File browser: also list the excluded folders (`.git`, build output, dependencies). Persisted across windows. */
   private showHiddenFiles = false;
   /** Bumped whenever every directory listing should be re-read (toggle, force refresh). */
   private dirGeneration = 0;
@@ -153,9 +166,34 @@ export class Hub implements vscode.Disposable {
     this.lagExpected = Date.now() + 1000;
     this.lagTimer = setInterval(() => {
       const now = Date.now();
-      this.lagMax = Math.max(this.lagMax, now - this.lagExpected);
+      const lag = Math.max(0, now - this.lagExpected);
+      this.lagMax = Math.max(this.lagMax, lag);
+      this.lagTotal += lag;
+      this.lagWindow.push(now, lag);
       this.lagExpected = now + 1000;
+      if (!this.starvedWarned) {
+        const total = this.lagWindow.total(now);
+        if (total >= STARVED_MS) this.warnStarved(total);
+      }
     }, 1000);
+  }
+
+  /** Once per activation: the host has been blocked for a third of the last minute, by someone else. */
+  private warnStarved(totalMs: number): void {
+    this.starvedWarned = true;
+    const windowSecs = LAG_WINDOW_MS / 1000;
+    this.log(`host starved: ${Math.round(totalMs)} ms of event-loop lag in the last ${windowSecs} s — another extension is busy; see Developer: Show Running Extensions`);
+    if (this.context.globalState.get<boolean>('sessionHub.hostLagWarningMuted', false)) return;
+    void vscode.window
+      .showWarningMessage(
+        `Claude Sessions is slow because the VS Code extension host is busy (blocked ${Math.round(totalMs / 1000)} s of the last ${windowSecs} s). Another extension is doing the work; Running Extensions shows which one.`,
+        'Show Running Extensions',
+        "Don't show again"
+      )
+      .then(choice => {
+        if (choice === 'Show Running Extensions') void vscode.commands.executeCommand('workbench.action.showRuntimeExtensions');
+        else if (choice === "Don't show again") void this.context.globalState.update('sessionHub.hostLagWarningMuted', true);
+      });
   }
 
   /** Max loop lag since the last call (ms), then reset. */
@@ -293,12 +331,15 @@ export class Hub implements vscode.Disposable {
       return cached.nodes;
     }
     const t0 = performance.now();
+    const lag0 = this.lagTotal;
     try {
       const nodes = await this.compute(node);
       const entry: ChildCache = { key, nodes, at: Date.now(), parents: [node], inflight: null };
       this.childCache.set(id, entry);
       const ms = Math.round(performance.now() - t0);
-      if (ms > 5) this.log(`children ${id.slice(0, 40)}: ${nodes.length} in ${ms} ms (${this.backend.kind} ${Math.round(this.backend.lastMs)} ms)`);
+      const lag = Math.round(this.lagTotal - lag0);
+      const lagNote = lag > LAG_REPORT_MS ? ` · host loop lag ${lag} ms` : '';
+      if (ms > 5) this.log(`children ${id.slice(0, 40)}: ${nodes.length} in ${ms} ms (${this.backend.kind} ${Math.round(this.backend.lastMs)} ms${lagNote})`);
       return nodes;
     } catch (err) {
       this.log(`children ${id} failed: ${(err as Error).message}`);
@@ -434,8 +475,29 @@ export class Hub implements vscode.Disposable {
 
   private async entryNodes(dir: string, parent: Extract<Node, { kind: 'browseGroup' | 'fsDir' }>): Promise<Node[]> {
     const entries = await this.backend.listEntries(dir, parent.repoRoot, this.showHiddenFiles);
+    this.trackIgnored(entries);
     if (entries.length === 0) return [{ kind: 'message', text: 'Empty folder' }];
     return entries.map(e => this.entryNode(e, parent));
+  }
+
+  /**
+   * Remember which listed paths are ignored so the decoration provider can dim them. Every
+   * re-listing corrects the set, so nothing needs clearing when caches are dropped.
+   */
+  private trackIgnored(entries: FsEntry[]): void {
+    const changed: vscode.Uri[] = [];
+    for (const e of entries) {
+      if (e.ignored === this.ignoredPaths.has(e.path)) continue;
+      if (e.ignored) this.ignoredPaths.add(e.path);
+      else this.ignoredPaths.delete(e.path);
+      changed.push(vscode.Uri.file(e.path));
+    }
+    if (changed.length) this.ignoredEmitter.fire(changed);
+  }
+
+  /** Whether the file browser last listed `p` as ignored (SKIP set or `.gitignore`d). */
+  isIgnored(p: string): boolean {
+    return this.ignoredPaths.has(p);
   }
 
   private entryNode(e: FsEntry, parent: Extract<Node, { kind: 'browseGroup' | 'fsDir' }>): Node {
@@ -476,7 +538,7 @@ export class Hub implements vscode.Disposable {
     return this.showHiddenFiles;
   }
 
-  /** Flip the file browser between hiding and showing ignored entries; every listing is re-read. */
+  /** Flip the file browser between hiding and showing the excluded folders; every listing is re-read. */
   async setShowHidden(value: boolean): Promise<void> {
     if (value === this.showHiddenFiles) return;
     this.showHiddenFiles = value;

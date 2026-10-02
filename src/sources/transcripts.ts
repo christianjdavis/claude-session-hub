@@ -6,6 +6,11 @@ import { projectsDir, realpathSafe } from '../paths';
 
 /** Only the head of each transcript is read for identity; metadata lives in the first records. */
 const HEAD_BYTES = 256 * 1024;
+/**
+ * The first record carrying `cwd` is the first user prompt, and a prompt with pasted screenshots
+ * can run to several megabytes. When the first window ends inside it, keep widening up to this.
+ */
+const HEAD_BYTES_MAX = 16 * 1024 * 1024;
 /** Tail window for turn state; widened when it holds no user/assistant record. */
 const TAIL_BYTES = 64 * 1024;
 const TAIL_BYTES_WIDE = 768 * 1024;
@@ -38,7 +43,7 @@ export interface TranscriptTail {
 
 interface HeadCache {
   key: string;
-  /** null = parsed but unusable (no cwd); cached so it is not re-read every build. */
+  /** null = parsed but unusable (no cwd within HEAD_BYTES_MAX); cached so it is not re-read every build. */
   head: TranscriptHead | null;
 }
 interface IndexEntry {
@@ -168,11 +173,18 @@ export class TranscriptScanner {
     const key = `${mtimeMs}:${size}`;
     const cached = this.heads.get(filePath);
     // Head content only grows; identity fields never change, so any cached head is valid.
-    // A null head (no cwd yet) is retried only while the file is still tiny.
-    if (cached && (cached.head !== null || size >= HEAD_BYTES)) return cached.head;
-    const text = await readWindow(filePath, 0, Math.min(size, HEAD_BYTES));
-    if (text === null) return null;
-    const head = parseHead(text, filePath, mtimeMs, size);
+    // A null head (no cwd yet) is retried when the file has changed, until it is too big to matter.
+    if (cached && (cached.head !== null || cached.key === key || size >= HEAD_BYTES_MAX)) return cached.head;
+    let head: TranscriptHead | null = null;
+    let bytes = HEAD_BYTES;
+    for (;;) {
+      const text = await readWindow(filePath, 0, Math.min(size, bytes));
+      if (text === null) return null;
+      head = parseHead(text, filePath, mtimeMs, size);
+      // No cwd yet and the window ended mid-record: widen and parse again.
+      if (head !== null || bytes >= size || bytes >= HEAD_BYTES_MAX) break;
+      bytes = Math.min(bytes * 4, HEAD_BYTES_MAX);
+    }
     this.heads.set(filePath, { key, head });
     return head;
   }
@@ -182,7 +194,9 @@ export class TranscriptScanner {
     const cached = this.tails.get(filePath);
     if (cached && cached.key === key) return cached.tail;
     let tail = await this.readTailWindow(filePath, size, TAIL_BYTES);
-    if (tail && !tail.sawTurnRecord && size > TAIL_BYTES) {
+    // A long tool-heavy turn fills the window with tool calls: widen when it holds no user or
+    // assistant record at all, or none that says where the last prompt or end of turn was.
+    if (tail && (!tail.sawTurnRecord || (tail.lastUserTs === null && tail.lastEndTurnTs === null)) && size > TAIL_BYTES) {
       tail = await this.readTailWindow(filePath, size, TAIL_BYTES_WIDE);
     }
     if (!tail) return null;

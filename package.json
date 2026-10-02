@@ -282,13 +282,13 @@
       },
       {
         "command": "sessionHub.showHiddenFiles",
-        "title": "Show Ignored Files",
+        "title": "Show Excluded Folders",
         "category": "Claude Sessions",
         "icon": "$(eye-closed)"
       },
       {
         "command": "sessionHub.hideHiddenFiles",
-        "title": "Hide Ignored Files",
+        "title": "Hide Excluded Folders",
         "category": "Claude Sessions",
         "icon": "$(eye)"
       },
@@ -795,7 +795,7 @@
         "sessionHub.adoptExternalTerminals": {
           "type": "boolean",
           "default": true,
-          "description": "Bind terminals where you started `claude` by hand to their sessions (via the process tree)."
+          "description": "Bind terminals where you started `claude` by hand to their sessions (via the process tree). Also re-binds session terminals restored after a window reload."
         },
         "sessionHub.useWorker": {
           "type": "boolean",

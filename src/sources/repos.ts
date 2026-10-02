@@ -42,19 +42,20 @@ export interface FsEntry {
   kind: 'dir' | 'file';
   /** Directories only: contains a `.git`. */
   isGit?: boolean;
-  /** Dotfile, build output, or `.gitignore`d: hidden unless the user asks to see ignored entries. */
+  /** In the SKIP set or `.gitignore`d: shown dimmed. SKIP entries are also dropped unless the user asks to see them. */
   ignored: boolean;
 }
 
 /** Immediate subdirectories of `dir` worth showing (no dotfolders or build output), each flagged if it is a git repo. */
 export async function listDirs(dir: string): Promise<DirEntry[]> {
   const entries = await listEntries(dir, null, false);
-  return entries.filter(e => e.kind === 'dir').map(e => ({ name: e.name, path: e.path, isGit: e.isGit ?? false }));
+  return entries.filter(e => e.kind === 'dir' && !e.name.startsWith('.')).map(e => ({ name: e.name, path: e.path, isGit: e.isGit ?? false }));
 }
 
 /**
- * Everything in `dir`, directories first. An entry is `ignored` when it is a dotfile, in the SKIP
- * set, or (inside a repo) matched by `.gitignore`; those are dropped unless `showHidden`.
+ * Everything in `dir`, directories first, dotfiles included. An entry is `ignored` when it is in
+ * the SKIP set or (inside a repo) matched by `.gitignore`; the UI dims those like the Explorer.
+ * Only SKIP entries (`.git`, build output, dependencies) are dropped, unless `showHidden`.
  */
 export async function listEntries(dir: string, repoRoot: string | null, showHidden: boolean): Promise<FsEntry[]> {
   let dirents: import('node:fs').Dirent[];
@@ -77,14 +78,14 @@ export async function listEntries(dir: string, repoRoot: string | null, showHidd
     })
   );
   const present = classified.filter((c): c is { name: string; isDir: boolean } => c !== null);
-  const basic = new Set(present.filter(c => c.name.startsWith('.') || SKIP.has(c.name)).map(c => c.name));
-  // One git call for the whole listing; only names not already hidden need checking.
-  const candidates = present.filter(c => !basic.has(c.name)).map(c => c.name);
+  const skipped = new Set(present.filter(c => SKIP.has(c.name)).map(c => c.name));
+  // One git call for the whole listing; only names not already excluded need checking.
+  const candidates = present.filter(c => !skipped.has(c.name)).map(c => c.name);
   const gitIgnored = repoRoot && candidates.length ? await checkIgnore(repoRoot, dir, candidates) : new Set<string>();
   const out: FsEntry[] = [];
   for (const c of present) {
-    const ignored = basic.has(c.name) || gitIgnored.has(c.name);
-    if (ignored && !showHidden) continue;
+    if (skipped.has(c.name) && !showHidden) continue;
+    const ignored = skipped.has(c.name) || gitIgnored.has(c.name);
     const p = path.join(dir, c.name);
     if (c.isDir) out.push({ name: c.name, path: p, kind: 'dir', isGit: await exists(path.join(p, '.git')), ignored });
     else out.push({ name: c.name, path: p, kind: 'file', ignored });

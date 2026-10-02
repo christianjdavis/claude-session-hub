@@ -12,7 +12,9 @@ import { EMPTY_TREE, applyWorkingTreeOp, changedFilesFor, predictWorkingTreeOp, 
 import type { PushMessage } from '../src/backend/api';
 import { fileTreeNodes, scmNodes } from '../src/views/file-tree';
 import type { Node } from '../src/views/nodes';
-import { listEntries } from '../src/sources/repos';
+import { listDirs, listEntries } from '../src/sources/repos';
+import { TranscriptScanner } from '../src/sources/transcripts';
+import { LagWindow } from '../src/state/lag-window';
 import { uploadTargets } from '../src/fs/upload-targets';
 import type { ChangedFile } from '../src/sources/changes';
 import { execFileSync } from 'node:child_process';
@@ -550,7 +552,7 @@ test('worker: processTree over IPC, prefetch pushes groups after a build', async
     assert.ok(tree instanceof Map, 'process tree is a Map');
     const here = await w.listEntries(path.join(__dirname, '..'), path.join(__dirname, '..'), false);
     assert.ok(here.some(e => e.kind === 'file' && e.name === 'package.json'), 'listEntries over IPC sees package.json');
-    assert.ok(!here.some(e => e.name === 'node_modules' || e.name === 'dist'), 'listEntries hides SKIP + gitignored entries');
+    assert.ok(!here.some(e => e.name === 'node_modules' || e.name === 'dist'), 'listEntries hides SKIP entries');
     assert.ok(tree.get(process.ppid)?.includes(process.pid), 'our own pid is listed under our parent');
     assert.ok(w.lastMs >= 0);
     const snap = await w.build({ roots: [path.join(os.homedir(), 'dev')], maxAgeDays: 14, maxPerRepo: 20, repoScanDepth: 4, reviewedKeys: [], expanded: [] });
@@ -592,25 +594,31 @@ void Promise.all(pending).then(() => {
   else console.log(`\n${passed} passed`);
 });
 
-test('listEntries: hides dotfiles, SKIP set and .gitignore matches; showHidden flags them; dirs first', async () => {
+test('listEntries: lists dotfiles, dims .gitignore matches, hides SKIP set unless showHidden; dirs first', async () => {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hub-ls-')));
   const git = (...args: string[]) => execFileSync('git', ['-C', dir, ...args], { stdio: 'pipe' });
   git('init', '-q');
-  fs.writeFileSync(path.join(dir, '.gitignore'), '*.log\n');
+  fs.writeFileSync(path.join(dir, '.gitignore'), '*.log\n.env\n');
   fs.mkdirSync(path.join(dir, 'node_modules'));
   fs.mkdirSync(path.join(dir, 'src'));
+  fs.mkdirSync(path.join(dir, '.hidden'));
   fs.writeFileSync(path.join(dir, '.env'), 'x');
   fs.writeFileSync(path.join(dir, 'src', 'a.ts'), 'x');
   fs.writeFileSync(path.join(dir, 'b.log'), 'x');
   fs.writeFileSync(path.join(dir, 'README.md'), 'x');
+  const fmt = (e: { kind: string; name: string; ignored: boolean }) => `${e.kind}:${e.name}${e.ignored ? '*' : ''}`;
+  // Dotfiles show; .gitignore'd entries show flagged (dimmed in the UI); SKIP entries are dropped.
   const shown = await listEntries(dir, dir, false);
-  assert.deepEqual(shown.map(e => `${e.kind}:${e.name}`), ['dir:src', 'file:README.md']);
+  assert.deepEqual(shown.map(fmt), ['dir:.hidden', 'dir:src', 'file:.env*', 'file:.gitignore', 'file:b.log*', 'file:README.md']);
+  // showHidden adds the SKIP entries, flagged.
   const all = await listEntries(dir, dir, true);
-  assert.deepEqual(all.map(e => `${e.kind}:${e.name}${e.ignored ? '*' : ''}`), ['dir:.git*', 'dir:node_modules*', 'dir:src', 'file:.env*', 'file:.gitignore*', 'file:b.log*', 'file:README.md']);
-  // No repo root: dotfiles and SKIP still hidden, gitignore rules not consulted.
+  assert.deepEqual(all.map(fmt), ['dir:.git*', 'dir:.hidden', 'dir:node_modules*', 'dir:src', 'file:.env*', 'file:.gitignore', 'file:b.log*', 'file:README.md']);
+  // No repo root: SKIP still hidden, gitignore rules not consulted, nothing flagged.
   const plain = await listEntries(dir, null, false);
-  assert.deepEqual(plain.map(e => e.name), ['src', 'b.log', 'README.md']);
+  assert.deepEqual(plain.map(fmt), ['dir:.hidden', 'dir:src', 'file:.env', 'file:.gitignore', 'file:b.log', 'file:README.md']);
   assert.deepEqual(await listEntries(path.join(dir, 'does-not-exist'), null, false), []);
+  // Folder browsing (All available) still skips dotfolders and build output.
+  assert.deepEqual((await listDirs(dir)).map(d => d.name), ['src']);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -619,4 +627,72 @@ test('uploadTargets: base names into the folder, duplicates collapsed', () => {
     { src: '/a/x.txt', dst: '/dst/x.txt' },
     { src: '/b/y', dst: '/dst/y' }
   ]);
+});
+
+test('readHead: a first prompt larger than the head window still yields cwd, id and first message', async () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hub-head-')));
+  const dir = path.join(root, '-Users-me-proj');
+  fs.mkdirSync(dir);
+  const file = path.join(dir, 'abc.jsonl');
+  const big = 'A'.repeat(400 * 1024); // > 256 KB, like two pasted screenshots
+  const lines = [
+    { type: 'custom-title', sessionId: 'abc', customTitle: 'all-files' },
+    { type: 'mode', sessionId: 'abc' },
+    { type: 'user', sessionId: 'abc', cwd: '/Users/me/proj', gitBranch: 'main', timestamp: '2026-10-01T15:56:39.000Z',
+      message: { role: 'user', content: [{ type: 'text', text: 'hello there' }, { type: 'image', source: { data: big } }] } },
+    { type: 'assistant', sessionId: 'abc', cwd: '/Users/me/proj', timestamp: '2026-10-01T15:56:50.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }], stop_reason: 'end_turn' } }
+  ];
+  fs.writeFileSync(file, lines.map(l => JSON.stringify(l)).join('\n') + '\n');
+  const st = fs.statSync(file);
+  const scanner = new TranscriptScanner(root);
+  const head = await scanner.readHead(file, st.mtimeMs, st.size);
+  assert.ok(head, 'head parsed');
+  assert.equal(head!.cwd, '/Users/me/proj');
+  assert.equal(head!.id, 'abc');
+  assert.equal(head!.firstMessage, 'hello there');
+  assert.equal(head!.gitBranch, 'main');
+  // A file with no cwd anywhere is remembered as unusable for that (mtime,size) and not re-read.
+  const none = path.join(dir, 'none.jsonl');
+  fs.writeFileSync(none, JSON.stringify({ type: 'mode', sessionId: 'none' }) + '\n');
+  const st2 = fs.statSync(none);
+  assert.equal(await scanner.readHead(none, st2.mtimeMs, st2.size), null);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('readTail: a long tool-heavy turn widens the window until the last prompt and end of turn are found', async () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hub-tail-')));
+  const file = path.join(root, 'tail.jsonl');
+  const recs: unknown[] = [
+    { type: 'user', timestamp: '2026-10-01T10:00:00.000Z', message: { role: 'user', content: 'do the thing' } },
+    { type: 'assistant', timestamp: '2026-10-01T10:00:05.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }], stop_reason: 'end_turn' } },
+    { type: 'user', timestamp: '2026-10-01T11:00:00.000Z', message: { role: 'user', content: 'now a long one' } }
+  ];
+  // ~100 KB of tool calls and results after the last prompt: more than the 64 KB tail window.
+  for (let i = 0; i < 100; i++) {
+    recs.push({ type: 'assistant', timestamp: '2026-10-01T11:00:10.000Z', message: { role: 'assistant', content: [{ type: 'tool_use', id: `t${i}`, name: 'Bash', input: { command: 'x'.repeat(500) } }], stop_reason: 'tool_use' } });
+    recs.push({ type: 'user', timestamp: '2026-10-01T11:00:11.000Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `t${i}`, content: 'y'.repeat(500) }] } });
+  }
+  fs.writeFileSync(file, recs.map(r => JSON.stringify(r)).join('\n') + '\n');
+  const st = fs.statSync(file);
+  assert.ok(st.size > 64 * 1024, 'fixture exceeds the narrow tail window');
+  const tail = await new TranscriptScanner(root).readTail(file, st.mtimeMs, st.size);
+  assert.ok(tail, 'tail parsed');
+  assert.equal(tail!.lastUserTs, Date.parse('2026-10-01T11:00:00.000Z'));
+  assert.equal(tail!.lastEndTurnTs, Date.parse('2026-10-01T10:00:05.000Z'));
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('LagWindow: sums lag inside the window only', () => {
+  const t = 1_000_000;
+  const w = new LagWindow(60_000);
+  for (let i = 0; i < 5; i++) w.push(t + i * 10_000, 4_000); // 20 s of lag within 40 s
+  assert.equal(w.total(t + 40_000), 20_000);
+  // The same burst spread over three minutes never reaches the threshold.
+  const w2 = new LagWindow(60_000);
+  for (let i = 0; i < 5; i++) w2.push(t + i * 45_000, 4_000);
+  assert.ok(w2.total(t + 180_000) < 20_000);
+  // Old samples drop out; zero-lag ticks add nothing.
+  assert.equal(w.total(t + 200_000), 0);
+  w.push(t + 200_000, 0);
+  assert.equal(w.total(t + 200_000), 0);
 });
