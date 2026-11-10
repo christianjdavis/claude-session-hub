@@ -3,7 +3,7 @@
 All notable changes to Claude Session Hub. The version is the git tag; the section for a tag is
 used as its GitHub Release notes.
 
-## [Unreleased]
+## [0.4.0] - 2026-11-10
 
 - **Push Branch** pushes a repo's current branch from the hub: an icon on every repo and
   session row and on a session's Files changed, Commits and Branch groups. It shows the
