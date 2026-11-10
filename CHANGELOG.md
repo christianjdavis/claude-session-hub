@@ -3,6 +3,13 @@
 All notable changes to Claude Session Hub. The version is the git tag; the section for a tag is
 used as its GitHub Release notes.
 
+## [Unreleased]
+
+- **Push Branch** pushes a repo's current branch from the hub: an icon on every repo and
+  session row and on a session's Files changed, Commits and Branch groups. It shows the
+  branch, target, commit count and any warning (remote ahead, default branch) in a
+  confirmation, then runs `git push` (`-u <remote> HEAD` on a first push) in a terminal.
+
 ## [0.3.0] - 2026-10-02
 
 - **Files / Browse files** now match the Explorer: dotfiles such as `.claude`, `.github` and

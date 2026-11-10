@@ -16,6 +16,7 @@ import { listDirs, listEntries } from '../src/sources/repos';
 import { TranscriptScanner } from '../src/sources/transcripts';
 import { LagWindow } from '../src/state/lag-window';
 import { uploadTargets } from '../src/fs/upload-targets';
+import { planPush } from '../src/sources/push';
 import type { ChangedFile } from '../src/sources/changes';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -433,6 +434,39 @@ test('scmNodes: Staged Changes above Changes, a file on both sides appears in bo
   // Outside git nothing can be staged: plain rows, no groups.
   const flat = scmNodes([file('notes.md', { repoRoot: null, status: 'clean' })], 's1');
   assert.deepEqual(flat.map(n => n.kind), ['file']);
+});
+
+test('planPush: first push sets upstream, then ahead/behind against it, default branch flagged', async () => {
+  const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hub-push-')));
+  const bare = path.join(tmp, 'remote.git');
+  const dir = path.join(tmp, 'work');
+  const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...args], { stdio: 'pipe' }).toString();
+  try {
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare]);
+    execFileSync('git', ['init', '-q', '-b', 'main', dir]);
+    assert.equal((await planPush(dir)).command, null, 'no remote, nothing to push to');
+    git(dir, 'remote', 'add', 'origin', bare);
+    git(dir, 'commit', '-q', '--allow-empty', '-m', 'one');
+
+    let p = await planPush(dir);
+    assert.deepEqual([p.branch, p.upstream, p.remote, p.ahead, p.isDefaultBranch, p.command], ['main', null, 'origin', null, true, 'git push -u origin HEAD']);
+    git(dir, 'push', '-q', '-u', 'origin', 'HEAD');
+    git(dir, 'remote', 'set-head', 'origin', 'main');
+
+    git(dir, 'checkout', '-q', '-b', "it's-new");
+    p = await planPush(dir);
+    assert.deepEqual([p.isDefaultBranch, p.upstream, p.command], [false, null, 'git push -u origin HEAD']);
+    git(dir, 'push', '-q', '-u', 'origin', 'HEAD');
+    git(dir, 'commit', '-q', '--allow-empty', '-m', 'two');
+    git(dir, 'commit', '-q', '--allow-empty', '-m', 'three');
+    p = await planPush(dir);
+    assert.deepEqual([p.upstream, p.ahead, p.behind, p.command], ["origin/it's-new", 2, 0, 'git push']);
+
+    git(dir, 'checkout', '-q', '--detach');
+    assert.deepEqual([(await planPush(dir)).branch, (await planPush(dir)).command], [null, null]);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test('applyWorkingTreeOp: stage, unstage and discard behave like the SCM buttons', async () => {

@@ -62,6 +62,16 @@ under Staged Changes (Discard on an untracked file deletes it, after a confirmat
 group headers offer **Stage All / Discard All** and **Unstage All**; folder rows inside a
 group offer the same for their subtree. The lists re-read themselves right after each action.
 
+**Pushing without Claude.** **Push Branch** (the push icon on every repo and session row,
+and on a session's **Files changed**, **Commits** and **Branch** groups; also in the right-
+click menu and the Command Palette) pushes the repo's current branch. It first shows what it
+will do: the branch, where it goes (`origin/<branch>`, or a new upstream on a first push),
+how many commits, and a warning when the remote is ahead or the branch is the default
+branch. After you confirm, it runs `git push` (or `git push -u origin HEAD` on a first push)
+in a new terminal, so SSH-agent, credential and Git LFS prompts work and you see git's
+output. It runs only when you click it. Claude has no way to trigger it, so it doesn't
+change what Claude Code's permission rules allow Claude to do.
+
 **Browsing and uploading files.** Every session row ends with a collapsed
 **Browse files** group rooted at its repo (or working directory), and every
 repo/folder row in All available has a **Files** group: the whole tree, not only
