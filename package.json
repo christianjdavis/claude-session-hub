@@ -315,6 +315,12 @@
         "title": "Move Down in Focus",
         "category": "Claude Sessions",
         "icon": "$(arrow-down)"
+      },
+      {
+        "command": "sessionHub.push",
+        "title": "Push Branch",
+        "category": "Claude Sessions",
+        "icon": "$(repo-push)"
       }
     ],
     "menus": {
@@ -709,6 +715,41 @@
           "command": "sessionHub.pinMoveDown",
           "when": "view == sessionHub.focus && viewItem =~ /^sh\\.(repo|folder)\\.pinned$/",
           "group": "0_pin@3"
+        },
+        {
+          "command": "sessionHub.push",
+          "when": "viewItem =~ /^sh\\.repo(\\.pinned)?$/",
+          "group": "1_act@3"
+        },
+        {
+          "command": "sessionHub.push",
+          "when": "viewItem =~ /^sh\\.(session(\\.\\w+)?|live|queue\\.(review|running|needsInput))$/",
+          "group": "1_act@3"
+        },
+        {
+          "command": "sessionHub.push",
+          "when": "viewItem == sh.commitsGroup || viewItem == sh.branchGroup",
+          "group": "inline@1"
+        },
+        {
+          "command": "sessionHub.push",
+          "when": "viewItem == sh.commitsGroup || viewItem == sh.branchGroup",
+          "group": "1_act@1"
+        },
+        {
+          "command": "sessionHub.push",
+          "when": "viewItem =~ /^sh\\.repo(\\.pinned)?$/",
+          "group": "inline@3"
+        },
+        {
+          "command": "sessionHub.push",
+          "when": "viewItem =~ /^sh\\.(session(\\.\\w+)?|live|queue\\.(review|running|needsInput))$/",
+          "group": "inline@3"
+        },
+        {
+          "command": "sessionHub.push",
+          "when": "viewItem == sh.filesGroup",
+          "group": "inline@9"
         }
       ]
     },

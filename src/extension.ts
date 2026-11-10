@@ -18,6 +18,7 @@ import { shortenHomePath } from './paths';
 import { formatRelativeTime } from './format';
 import type { ChangedFile, WorkingTreeOp } from './sources/changes';
 import { INDEX_REF } from './sources/changes';
+import { planPush } from './sources/push';
 
 /** Serves `sessionhub-git:` documents: a file's content at a git ref, for diffs against the working tree. */
 const GIT_SCHEME = 'sessionhub-git';
@@ -343,6 +344,39 @@ export function activate(context: vscode.ExtensionContext): void {
   reg('sessionHub.stageAll', arg => applyOp(arg, 'stage'));
   reg('sessionHub.unstageAll', arg => applyOp(arg, 'unstage'));
   reg('sessionHub.discardAll', arg => applyOp(arg, 'discard'));
+  // Push the branch from a repo, session, or commits row. You click it and confirm it; the push
+  // runs in a visible terminal (so credential, SSH-agent and LFS pre-push prompts work), never
+  // through Claude, and nothing here is reachable by a Claude tool call.
+  const repoRootOf = (arg: unknown): string | null => {
+    const node = arg as Node | undefined;
+    if (node?.kind === 'repo') return node.repo.isGit ? node.repo.root : null;
+    if (node?.kind === 'branchGroup') return node.repoRoot;
+    const id = node?.kind === 'commitsGroup' || node?.kind === 'commit' ? node.sessionId : idFrom(arg);
+    return (id ? hub.snapshot.sessions.get(id)?.repoRoot : null) ?? null;
+  };
+  reg('sessionHub.push', async arg => {
+    const root = repoRootOf(arg) ?? (await pickRepo(hub));
+    if (!root) return;
+    const plan = await planPush(root);
+    const where = shortenHomePath(root);
+    if (!plan.branch) return void vscode.window.showWarningMessage(`${where} is on a detached HEAD; check out a branch to push.`);
+    if (!plan.remote || !plan.command) return void vscode.window.showWarningMessage(`${where} has no git remote to push to.`);
+    if (plan.ahead === 0) return void vscode.window.showInformationMessage(`${plan.branch} is up to date with ${plan.upstream}.`);
+    const target = plan.upstream ?? `${plan.remote}/${plan.branch} (new branch, sets upstream)`;
+    const commits = plan.ahead === null ? '' : `${plan.ahead} commit${plan.ahead === 1 ? '' : 's'} `;
+    const detail = [
+      `Runs \`${plan.command}\` in ${where}.`,
+      plan.behind ? `${plan.upstream} has ${plan.behind} commit${plan.behind === 1 ? '' : 's'} you don't; the push will be rejected until you pull or rebase.` : '',
+      plan.isDefaultBranch ? `${plan.branch} is the default branch: this pushes straight to it, not to a review branch.` : ''
+    ].filter(Boolean).join('\n\n');
+    const button = plan.isDefaultBranch ? `Push to ${plan.branch}` : 'Push';
+    const ok = await vscode.window.showWarningMessage(`Push ${commits}on ${plan.branch} to ${target}?`, { modal: true, detail }, button);
+    if (ok !== button) return;
+    hub.log(`push: ${plan.command} in ${root}`);
+    hub.terminals.runInNewTerminal(root, plan.command, `git push · ${plan.branch}`);
+    // The terminal reports the result; re-read the commits/branch groups once it has had time to finish.
+    setTimeout(() => void hub.refresh(true), 5000);
+  });
   reg('sessionHub.showSummary', async arg => {
     const id = idFrom(arg) ?? hub.terminals.activeSessionId();
     if (!id) return;
