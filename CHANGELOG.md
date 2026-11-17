@@ -3,6 +3,13 @@
 All notable changes to Claude Session Hub. The version is the git tag; the section for a tag is
 used as its GitHub Release notes.
 
+## [Unreleased]
+
+- **Push Branch runs in the background** instead of opening a terminal: a progress
+  notification, then the result, with **Create/Open Merge Request** when the remote prints
+  a link. git's output goes to the Claude Sessions log; if the push needs a prompt, the
+  error offers **Push in Terminal**.
+
 ## [0.4.0] - 2026-11-10
 
 - **Push Branch** pushes a repo's current branch from the hub: an icon on every repo and

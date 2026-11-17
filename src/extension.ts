@@ -18,7 +18,7 @@ import { shortenHomePath } from './paths';
 import { formatRelativeTime } from './format';
 import type { ChangedFile, WorkingTreeOp } from './sources/changes';
 import { INDEX_REF } from './sources/changes';
-import { planPush } from './sources/push';
+import { planPush, pushErrorSummary, runPush } from './sources/push';
 
 /** Serves `sessionhub-git:` documents: a file's content at a git ref, for diffs against the working tree. */
 const GIT_SCHEME = 'sessionhub-git';
@@ -344,9 +344,9 @@ export function activate(context: vscode.ExtensionContext): void {
   reg('sessionHub.stageAll', arg => applyOp(arg, 'stage'));
   reg('sessionHub.unstageAll', arg => applyOp(arg, 'unstage'));
   reg('sessionHub.discardAll', arg => applyOp(arg, 'discard'));
-  // Push the branch from a repo, session, or commits row. You click it and confirm it; the push
-  // runs in a visible terminal (so credential, SSH-agent and LFS pre-push prompts work), never
-  // through Claude, and nothing here is reachable by a Claude tool call.
+  // Push the branch from a repo, session, or commits row. You click it and confirm it; the push runs as
+  // git in the background (output in the Claude Sessions log), never through Claude, and nothing here is
+  // reachable by a Claude tool call. A push that needs an interactive prompt can be re-run in a terminal.
   const repoRootOf = (arg: unknown): string | null => {
     const node = arg as Node | undefined;
     if (node?.kind === 'repo') return node.repo.isGit ? node.repo.root : null;
@@ -372,10 +372,32 @@ export function activate(context: vscode.ExtensionContext): void {
     const button = plan.isDefaultBranch ? `Push to ${plan.branch}` : 'Push';
     const ok = await vscode.window.showWarningMessage(`Push ${commits}on ${plan.branch} to ${target}?`, { modal: true, detail }, button);
     if (ok !== button) return;
-    hub.log(`push: ${plan.command} in ${root}`);
-    hub.terminals.runInNewTerminal(root, plan.command, `git push · ${plan.branch}`);
-    // The terminal reports the result; re-read the commits/branch groups once it has had time to finish.
-    setTimeout(() => void hub.refresh(true), 5000);
+    const pushArgs = plan.args ?? [];
+    const pushCommand = plan.command;
+    hub.log(`push: ${pushCommand} in ${root}`);
+    const result = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: `Pushing ${plan.branch} to ${plan.upstream ?? plan.remote}…`, cancellable: true },
+      (_progress, token) => {
+        const abort = new AbortController();
+        token.onCancellationRequested(() => abort.abort());
+        return runPush(root, pushArgs, { signal: abort.signal, onOutput: chunk => { for (const l of chunk.split(/\r?\n/)) if (l.trim()) hub.log(`push: ${l.trim()}`); } });
+      }
+    );
+    void hub.refresh(true);
+    if (result.code === 0) {
+      const actions = result.reviewUrl ? [result.reviewExists ? 'Open Merge Request' : 'Create Merge Request'] : [];
+      const choice = await vscode.window.showInformationMessage(`Pushed ${plan.branch} to ${plan.upstream ?? `${plan.remote}/${plan.branch}`}.`, ...actions, 'Show Output');
+      if (choice === 'Show Output') hub.output.show(true);
+      else if (choice && result.reviewUrl) void vscode.env.openExternal(vscode.Uri.parse(result.reviewUrl));
+      return;
+    }
+    const why = result.code === null ? 'cancelled or timed out' : pushErrorSummary(result.output);
+    const choice = await vscode.window.showErrorMessage(`Push of ${plan.branch} failed: ${why}`, 'Show Output', 'Push in Terminal');
+    if (choice === 'Show Output') hub.output.show(true);
+    else if (choice === 'Push in Terminal' && pushCommand) {
+      hub.terminals.runInNewTerminal(root, pushCommand, `git push · ${plan.branch}`);
+      setTimeout(() => void hub.refresh(true), 5000);
+    }
   });
   reg('sessionHub.showSummary', async arg => {
     const id = idFrom(arg) ?? hub.terminals.activeSessionId();

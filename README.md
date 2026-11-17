@@ -68,8 +68,12 @@ click menu and the Command Palette) pushes the repo's current branch. It first s
 will do: the branch, where it goes (`origin/<branch>`, or a new upstream on a first push),
 how many commits, and a warning when the remote is ahead or the branch is the default
 branch. After you confirm, it runs `git push` (or `git push -u origin HEAD` on a first push)
-in a new terminal, so SSH-agent, credential and Git LFS prompts work and you see git's
-output. It runs only when you click it. Claude has no way to trigger it, so it doesn't
+in the background with a progress notification, no terminal. git's output goes to the
+**Claude Sessions** output channel. When it finishes you get the result, with a button to
+create or open the merge request when GitLab (or GitHub) prints one. Saved credentials,
+keychains and SSH agents work. A push that needs you to type something, such as a password
+or passphrase, fails instead of waiting, and the error offers **Push in Terminal** to run it
+there. It runs only when you click it. Claude has no way to trigger it, so it doesn't
 change what Claude Code's permission rules allow Claude to do.
 
 **Browsing and uploading files.** Every session row ends with a collapsed

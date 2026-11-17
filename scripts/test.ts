@@ -16,7 +16,7 @@ import { listDirs, listEntries } from '../src/sources/repos';
 import { TranscriptScanner } from '../src/sources/transcripts';
 import { LagWindow } from '../src/state/lag-window';
 import { uploadTargets } from '../src/fs/upload-targets';
-import { planPush } from '../src/sources/push';
+import { planPush, pushErrorSummary, reviewLink, runPush } from '../src/sources/push';
 import type { ChangedFile } from '../src/sources/changes';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -461,6 +461,14 @@ test('planPush: first push sets upstream, then ahead/behind against it, default 
     git(dir, 'commit', '-q', '--allow-empty', '-m', 'three');
     p = await planPush(dir);
     assert.deepEqual([p.upstream, p.ahead, p.behind, p.command], ["origin/it's-new", 2, 0, 'git push']);
+    const r = await runPush(dir, p.args!);
+    assert.equal(r.code, 0, r.output);
+    assert.deepEqual([(await planPush(dir)).ahead], [0], 'pushed without a terminal');
+    git(dir, 'remote', 'set-url', 'origin', path.join(tmp, 'missing.git'));
+    git(dir, 'commit', '-q', '--allow-empty', '-m', 'four');
+    const bad = await runPush(dir, ['push']);
+    assert.notEqual(bad.code, 0);
+    assert.match(pushErrorSummary(bad.output), /^fatal:/);
 
     git(dir, 'checkout', '-q', '--detach');
     assert.deepEqual([(await planPush(dir)).branch, (await planPush(dir)).command], [null, null]);
@@ -729,4 +737,15 @@ test('LagWindow: sums lag inside the window only', () => {
   assert.equal(w.total(t + 200_000), 0);
   w.push(t + 200_000, 0);
   assert.equal(w.total(t + 200_000), 0);
+});
+
+test('reviewLink: GitLab create/view merge request and GitHub pull/new', () => {
+  const gl = 'remote: \nremote: To create a merge request for feat/x, visit:\nremote:   https://gitlab.com/g/p/-/merge_requests/new?merge_request%5Bsource_branch%5D=feat%2Fx\nremote: \nTo gitlab.com:g/p.git';
+  assert.deepEqual(reviewLink(gl), { reviewUrl: 'https://gitlab.com/g/p/-/merge_requests/new?merge_request%5Bsource_branch%5D=feat%2Fx', reviewExists: false });
+  const glView = 'remote: View merge request for feat/x:\nremote:   https://gitlab.com/g/p/-/merge_requests/12';
+  assert.deepEqual(reviewLink(glView), { reviewUrl: 'https://gitlab.com/g/p/-/merge_requests/12', reviewExists: true });
+  const gh = "remote: Create a pull request for 'x' on GitHub by visiting:\nremote:      https://github.com/o/r/pull/new/x";
+  assert.deepEqual(reviewLink(gh), { reviewUrl: 'https://github.com/o/r/pull/new/x', reviewExists: false });
+  assert.deepEqual(reviewLink('Everything up-to-date'), { reviewUrl: null, reviewExists: false });
+  assert.equal(pushErrorSummary(' ! [rejected]        x -> x (non-fast-forward)\nerror: failed to push some refs'), 'error: failed to push some refs');
 });

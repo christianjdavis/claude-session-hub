@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 
 /** What a push from the hub would do, read before asking the user to confirm. */
 export interface PushPlan {
@@ -15,8 +15,10 @@ export interface PushPlan {
   behind: number | null;
   /** The branch is the remote's default branch (origin/HEAD), or main/master when that is unknown. */
   isDefaultBranch: boolean;
-  /** Shell command to run in the terminal, or null when there is nothing pushable. */
+  /** The push as a shell command (shown in the confirmation, used by the terminal fallback); null when there is nothing pushable. */
   command: string | null;
+  /** The same push as git arguments, for running it directly. */
+  args: string[] | null;
 }
 
 export async function planPush(repoRoot: string): Promise<PushPlan> {
@@ -41,8 +43,79 @@ export async function planPush(repoRoot: string): Promise<PushPlan> {
   const isDefaultBranch = !!branch && (defaultBranch ? branch === defaultBranch : branch === 'main' || branch === 'master');
 
   // `-u <remote> HEAD` on a first push, so the branch tracks what it was pushed to; plain `push` after.
-  const command = !branch || !remote ? null : upstream ? 'git push' : `git push -u ${shellQuote(remote)} HEAD`;
-  return { repoRoot, branch, upstream, remote, ahead, behind, isDefaultBranch, command };
+  const args = !branch || !remote ? null : upstream ? ['push'] : ['push', '-u', remote, 'HEAD'];
+  const command = args ? ['git', ...args].map(shellQuote).join(' ') : null;
+  return { repoRoot, branch, upstream, remote, ahead, behind, isDefaultBranch, command, args };
+}
+
+export interface PushResult {
+  /** git's exit code; null when it was cancelled or timed out. */
+  code: number | null;
+  /** Combined stdout and stderr, as git printed it. */
+  output: string;
+  /** Merge/pull request link the remote printed (GitLab, GitHub), if any. */
+  reviewUrl: string | null;
+  /** True when the review link is to an existing merge/pull request rather than a "create" page. */
+  reviewExists: boolean;
+}
+
+const PUSH_TIMEOUT_MS = 3 * 60_000;
+
+/**
+ * Run `git <args>` in the repo without a terminal. Credential prompts cannot be answered here, so they are
+ * turned off (GIT_TERMINAL_PROMPT=0) and fail fast instead of hanging; helpers, keychains and SSH agents work.
+ */
+export function runPush(repoRoot: string, args: string[], opts: { onOutput?: (chunk: string) => void; signal?: AbortSignal } = {}): Promise<PushResult> {
+  return new Promise(resolve => {
+    const child = spawn('git', ['-C', repoRoot, ...args], {
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    let output = '';
+    const onData = (b: Buffer) => {
+      const chunk = b.toString();
+      output += chunk;
+      opts.onOutput?.(chunk);
+    };
+    child.stdout.on('data', onData);
+    child.stderr.on('data', onData);
+    const kill = () => child.kill('SIGTERM');
+    const timer = setTimeout(kill, PUSH_TIMEOUT_MS);
+    opts.signal?.addEventListener('abort', kill);
+    let done = false;
+    const finish = (code: number | null) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      opts.signal?.removeEventListener('abort', kill);
+      resolve({ code, output, ...reviewLink(output) });
+    };
+    child.on('error', err => {
+      output += String(err);
+      finish(-1);
+    });
+    child.on('close', (code, sig) => finish(sig ? null : code));
+  });
+}
+
+/** Find the merge/pull request link in `remote:` lines (GitLab "create"/"view merge request", GitHub "pull/new"). */
+export function reviewLink(output: string): { reviewUrl: string | null; reviewExists: boolean } {
+  const lines = output.split(/\r?\n/).filter(l => l.startsWith('remote:'));
+  for (let i = 0; i < lines.length; i++) {
+    const url = /(https?:\/\/\S+)/.exec(lines[i]!)?.[1];
+    if (!url || !/merge_requests|\/pull\//.test(url)) continue;
+    const context = `${lines[i - 1] ?? ''} ${lines[i]}`.toLowerCase();
+    const exists = /view merge request|\/merge_requests\/\d+|\/pull\/\d+/.test(context);
+    return { reviewUrl: url, reviewExists: exists };
+  }
+  return { reviewUrl: null, reviewExists: false };
+}
+
+/** Most useful line of a failed push for a one-line error (git's `error:`/`fatal:`/`!` rejection lines). */
+export function pushErrorSummary(output: string): string {
+  const lines = output.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const pick = lines.find(l => /^(fatal|error):/i.test(l)) ?? lines.find(l => l.startsWith('! ')) ?? lines.find(l => /^remote: (error|GitLab:)/i.test(l)) ?? lines[lines.length - 1];
+  return pick ?? 'git push failed';
 }
 
 function run(cmd: string, args: string[]): Promise<string | null> {
