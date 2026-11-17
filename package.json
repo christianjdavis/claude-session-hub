@@ -833,6 +833,26 @@
           "default": false,
           "description": "Show a VS Code toast when a session starts waiting for input or finishes a turn."
         },
+        "sessionHub.notifications.system": {
+          "type": "string",
+          "enum": [
+            "all",
+            "needsInput",
+            "off"
+          ],
+          "enumDescriptions": [
+            "Notify when a session needs input and when it finishes a turn.",
+            "Notify only when a session needs input.",
+            "No macOS notifications."
+          ],
+          "default": "all",
+          "markdownDescription": "macOS Notification Center alerts naming the repo, the session and what it needs. Clicking one brings up the VS Code window that hosts the session and opens its terminal tab. Install `terminal-notifier` (`brew install terminal-notifier`) for clickable notifications; without it they still show but clicking does nothing."
+        },
+        "sessionHub.notifications.systemWhenFocused": {
+          "type": "boolean",
+          "default": false,
+          "description": "Also send a macOS notification when the session's terminal is already the active terminal of the focused window."
+        },
         "sessionHub.adoptExternalTerminals": {
           "type": "boolean",
           "default": true,

@@ -1,6 +1,7 @@
 import * as os from 'node:os';
 import * as vscode from 'vscode';
 import { expandHome, normalizePath } from './paths';
+import type { SystemNotifyMode } from './notify/system';
 
 export type TerminalLocationSetting = 'editor' | 'panel';
 
@@ -13,6 +14,8 @@ export interface HubConfig {
   pollIntervalMs: number;
   clearReviewOnFocus: boolean;
   notificationsEnabled: boolean;
+  systemNotifications: SystemNotifyMode;
+  systemNotificationsWhenFocused: boolean;
   adoptExternalTerminals: boolean;
   useOfficialExtensionWhenCwdMatches: boolean;
   extraResumeArgs: string;
@@ -35,6 +38,8 @@ export function getConfig(): HubConfig {
     pollIntervalMs: Math.max(1000, c.get<number>('pollIntervalMs', 5000)),
     clearReviewOnFocus: c.get<boolean>('clearReviewOnFocus', true),
     notificationsEnabled: c.get<boolean>('notifications.enabled', false),
+    systemNotifications: c.get<SystemNotifyMode>('notifications.system', 'all'),
+    systemNotificationsWhenFocused: c.get<boolean>('notifications.systemWhenFocused', false),
     adoptExternalTerminals: c.get<boolean>('adoptExternalTerminals', true),
     useOfficialExtensionWhenCwdMatches: c.get<boolean>('useOfficialExtensionWhenCwdMatches', false),
     extraResumeArgs: c.get<string>('extraResumeArgs', '').trim(),

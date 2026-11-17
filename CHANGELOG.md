@@ -5,6 +5,14 @@ used as its GitHub Release notes.
 
 ## [Unreleased]
 
+- **macOS notifications** when a session needs input or finishes a turn, naming the repo,
+  the session (and branch) and what it needs: the pending question, the permission it is
+  waiting on, or the first line of its reply. Clicking one brings up the VS Code window
+  that hosts the session and opens its terminal tab. Only one window sends each
+  notification, and it is withdrawn once the session no longer needs you. Needs
+  `terminal-notifier` for click-through. Settings: `notifications.system`
+  (`all` / `needsInput` / `off`) and `notifications.systemWhenFocused`.
+
 - **Push Branch runs in the background** instead of opening a terminal: a progress
   notification, then the result, with **Create/Open Merge Request** when the remote prints
   a link. git's output goes to the Claude Sessions log; if the push needs a prompt, the

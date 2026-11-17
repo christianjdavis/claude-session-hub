@@ -111,7 +111,7 @@ to open the switcher.
 
 All under `sessionHub.*`: `claudePath`, `terminalLocation`, `roots`,
 `repoScanDepth`, `maxAgeDays`, `maxPerRepo`, `pollIntervalMs`,
-`clearReviewOnFocus`, `notifications.enabled`, `adoptExternalTerminals`,
+`clearReviewOnFocus`, `notifications.enabled`, `notifications.system`, `notifications.systemWhenFocused`, `adoptExternalTerminals`,
 `useOfficialExtensionWhenCwdMatches`, `extraResumeArgs`, `useWorker`.
 
 ## Performance

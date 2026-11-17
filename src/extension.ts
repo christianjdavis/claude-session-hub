@@ -48,6 +48,18 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   void vscode.commands.executeCommand('setContext', 'sessionHub.officialExtension', officialExtensionPresent());
 
+  // Clicked macOS notifications arrive as vscode://<extension id>/focus?session=<id>[&job=<short>].
+  context.subscriptions.push(
+    vscode.window.registerUriHandler({
+      handleUri: uri => {
+        if (uri.path !== '/focus') return;
+        const q = new URLSearchParams(uri.query);
+        const session = q.get('session');
+        if (session) void hub.openFromNotification(session, q.get('job'));
+      }
+    })
+  );
+
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(GIT_SCHEME, {
       provideTextDocumentContent: async uri => {

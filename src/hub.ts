@@ -12,6 +12,8 @@ import { LagWindow } from './state/lag-window';
 import type { Pin } from './state/pin-store';
 import { deriveQueue } from './state/queue';
 import { TerminalManager } from './terminals/manager';
+import { SystemNotifier } from './notify/system';
+import { eventKey } from './notify/content';
 import type { ItemContext, Node } from './views/nodes';
 import { sessionOf } from './views/nodes';
 import { fileTreeNodes, scmNodes } from './views/file-tree';
@@ -54,6 +56,7 @@ export class Hub implements vscode.Disposable {
   /** Repo/folder rows promoted into the Focus view, in display order. */
   readonly pins: PinStore;
   readonly terminals: TerminalManager;
+  private readonly notifier: SystemNotifier;
   private backend: Backend;
   private readonly emitter = new vscode.EventEmitter<Snapshot>();
   readonly onDidChange = this.emitter.event;
@@ -121,9 +124,19 @@ export class Hub implements vscode.Disposable {
       processTree: () => this.backend.processTree(),
       log: msg => this.log(msg)
     });
+    this.notifier = new SystemNotifier({
+      extensionId: context.extension.id,
+      mode: () => this._config.systemNotifications,
+      whenFocused: () => this._config.systemNotificationsWhenFocused,
+      owns: id => this.terminals.terminalFor(id) !== undefined,
+      isActiveHere: id => this.terminals.activeSessionId() === id,
+      stillPending: key => this._snapshot.queue.some(q => q.kind !== 'running' && eventKey(q) === key),
+      log: msg => this.log(msg)
+    });
     this.startLagMonitor();
     this.subs.push(
       this.terminals,
+      this.notifier,
       this.emitter,
       this.nodeEmitter,
       this.pinsEmitter,
@@ -795,25 +808,41 @@ export class Hub implements vscode.Disposable {
     }, want);
   }
 
-  /** Toasts on transitions into needsInput / review (seeded on the first snapshot). */
+  /**
+   * On transitions into needsInput / review (seeded on the first snapshot): an in-window toast when enabled,
+   * and a macOS notification from one window (see SystemNotifier). Notifications for sessions that no longer
+   * need attention are withdrawn.
+   */
   private notifyTransitions(snap: Snapshot): void {
     const cur = new Map<string, QueueItem['kind']>();
     for (const q of snap.queue) cur.set(q.reviewKey ?? `${q.sessionId}:${q.kind}`, q.kind);
     const prev = this.prevQueue;
     this.prevQueue = cur;
-    if (!prev || !this._config.notificationsEnabled) return;
+    const attention = new Set(snap.queue.filter(q => q.kind !== 'running').map(q => q.sessionId));
+    for (const id of this.notifier.sessionsShown()) if (!attention.has(id)) this.notifier.clear(id);
+    if (!prev) return;
     for (const q of snap.queue) {
       if (q.kind === 'running') continue;
       const key = q.reviewKey ?? `${q.sessionId}:${q.kind}`;
       if (prev.has(key)) continue;
+      void this.notifier.notify(q);
+      if (!this._config.notificationsEnabled) continue;
       const name = q.job && !q.session ? q.job.name ?? q.job.short : displayName(q.session, q.live);
       const msg = q.kind === 'needsInput' ? `Claude needs input: ${name} (${q.reason})` : `Claude finished: ${name}`;
       void vscode.window.showInformationMessage(msg, 'Open').then(choice => {
-        if (choice !== 'Open') return;
-        if (q.job && !q.live) this.terminals.attachJob(q.job);
-        else void this.terminals.focus(q.sessionId);
+        if (choice === 'Open') void this.openFromNotification(q.sessionId, q.job && !q.live ? q.job.short : null);
       });
     }
+  }
+
+  /** Bring up the session a notification was about: its terminal tab here, or the background job. */
+  async openFromNotification(sessionId: string, jobShort: string | null): Promise<void> {
+    if (jobShort) {
+      const job = this._snapshot.jobs.find(j => j.short === jobShort);
+      if (job && !job.live) return this.terminals.attachJob(job);
+    }
+    this.notifier.clear(sessionId);
+    await this.terminals.focus(sessionId);
   }
 }
 

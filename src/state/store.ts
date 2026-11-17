@@ -153,6 +153,7 @@ export class SessionStore {
       lastEndTurnTs: tail?.lastEndTurnTs ?? null,
       lastAssistantText: tail?.lastAssistantText ?? null,
       pendingQuestion: isLive ? tail?.pendingQuestion ?? false : false,
+      pendingQuestionText: isLive ? tail?.pendingQuestionText ?? null : null,
       prLink: tail?.prLink ?? null,
       repoRoot,
       inWorkspace
@@ -180,6 +181,7 @@ export class SessionStore {
       lastEndTurnTs: null,
       lastAssistantText: null,
       pendingQuestion: false,
+      pendingQuestionText: null,
       prLink: null,
       repoRoot: await findRepoRoot(cwdReal, stopAt),
       inWorkspace

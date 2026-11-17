@@ -23,6 +23,8 @@ export interface Session {
   lastAssistantText: string | null;
   /** True if the transcript tail shows an AskUserQuestion tool_use without a result. */
   pendingQuestion: boolean;
+  /** Text of the pending AskUserQuestion, when there is one. */
+  pendingQuestionText: string | null;
   prLink: { number: number; url: string } | null;
   /** Nearest ancestor of cwdReal (up to the workspace root) that contains `.git`. */
   repoRoot: string | null;

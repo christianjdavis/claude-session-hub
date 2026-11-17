@@ -38,6 +38,8 @@ export interface TranscriptTail {
   lastEndTurnTs: number | null;
   lastAssistantText: string | null;
   pendingQuestion: boolean;
+  /** Text of the newest unanswered AskUserQuestion, when one is pending. */
+  pendingQuestionText: string | null;
   prLink: { number: number; url: string } | null;
 }
 
@@ -319,7 +321,7 @@ function parseTail(lines: string[]): TranscriptTail & { sawTurnRecord: boolean }
   let lastAssistantText: string | null = null;
   let prLink: TranscriptTail['prLink'] = null;
   let sawTurnRecord = false;
-  const openQuestions = new Map<string, number>(); // tool_use_id → ts
+  const openQuestions = new Map<string, { t: number; text: string | null }>(); // tool_use_id → ts, question
   const answered = new Set<string>();
 
   for (const raw of lines) {
@@ -362,7 +364,7 @@ function parseTail(lines: string[]): TranscriptTail & { sawTurnRecord: boolean }
           const text = assistantText(m);
           if (text) lastAssistantText = text;
           if (m['stop_reason'] === 'end_turn' && t !== null) lastEndTurnTs = t;
-          for (const id of askUserQuestionIds(m)) openQuestions.set(id, t ?? 0);
+          for (const q of askUserQuestions(m)) openQuestions.set(q.id, { t: t ?? 0, text: q.text });
         }
         break;
       }
@@ -379,10 +381,16 @@ function parseTail(lines: string[]): TranscriptTail & { sawTurnRecord: boolean }
     }
   }
   let pendingQuestion = false;
-  for (const [id, t] of openQuestions) {
+  let pendingQuestionText: string | null = null;
+  let pendingAt = -1;
+  for (const [id, q] of openQuestions) {
     if (answered.has(id)) continue;
-    if (lastUserTs !== null && t < lastUserTs) continue; // superseded by a later human prompt
+    if (lastUserTs !== null && q.t < lastUserTs) continue; // superseded by a later human prompt
     pendingQuestion = true;
+    if (q.t >= pendingAt) {
+      pendingAt = q.t;
+      pendingQuestionText = q.text;
+    }
   }
   return {
     aiTitle,
@@ -393,6 +401,7 @@ function parseTail(lines: string[]): TranscriptTail & { sawTurnRecord: boolean }
     lastEndTurnTs,
     lastAssistantText,
     pendingQuestion,
+    pendingQuestionText,
     prLink,
     sawTurnRecord
   };
@@ -456,16 +465,27 @@ function assistantText(m: Rec): string | null {
   return parts.length ? parts.join('\n') : null;
 }
 
-function askUserQuestionIds(m: Rec): string[] {
+function askUserQuestions(m: Rec): Array<{ id: string; text: string | null }> {
   const content = m['content'];
   if (!Array.isArray(content)) return [];
-  const ids: string[] = [];
+  const out: Array<{ id: string; text: string | null }> = [];
   for (const part of content) {
     if (!part || typeof part !== 'object') continue;
     const p = part as Rec;
-    if (p['type'] === 'tool_use' && p['name'] === 'AskUserQuestion' && typeof p['id'] === 'string') ids.push(p['id']);
+    if (p['type'] === 'tool_use' && p['name'] === 'AskUserQuestion' && typeof p['id'] === 'string') out.push({ id: p['id'], text: questionText(p['input']) });
   }
-  return ids;
+  return out;
+}
+
+/** First question of an AskUserQuestion input (`{ questions: [{ question }] }`). */
+function questionText(input: unknown): string | null {
+  if (!input || typeof input !== 'object') return null;
+  const qs = (input as Rec)['questions'];
+  if (!Array.isArray(qs)) return null;
+  const first = qs[0] as Rec | undefined;
+  const text = first && typeof first['question'] === 'string' ? first['question'].trim() : '';
+  if (!text) return null;
+  return qs.length > 1 ? `${text} (+${qs.length - 1} more)` : text;
 }
 
 function toolResultIds(o: Rec): string[] {

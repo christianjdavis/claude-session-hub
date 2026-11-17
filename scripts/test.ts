@@ -17,6 +17,7 @@ import { TranscriptScanner } from '../src/sources/transcripts';
 import { LagWindow } from '../src/state/lag-window';
 import { uploadTargets } from '../src/fs/upload-targets';
 import { planPush, pushErrorSummary, reviewLink, runPush } from '../src/sources/push';
+import { eventKey, notificationContent } from '../src/notify/content';
 import type { ChangedFile } from '../src/sources/changes';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -63,6 +64,7 @@ function session(p: Partial<Session>): Session {
     lastEndTurnTs: null,
     lastAssistantText: null,
     pendingQuestion: false,
+    pendingQuestionText: null,
     prLink: null,
     repoRoot: null,
     inWorkspace: true,
@@ -737,6 +739,41 @@ test('LagWindow: sums lag inside the window only', () => {
   assert.equal(w.total(t + 200_000), 0);
   w.push(t + 200_000, 0);
   assert.equal(w.total(t + 200_000), 0);
+});
+
+test('readTail: pendingQuestionText is the newest unanswered AskUserQuestion', async () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hub-q-')));
+  const file = path.join(root, 'q.jsonl');
+  const ask = (id: string, t: string, questions: unknown[]) => ({ type: 'assistant', timestamp: t, message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'AskUserQuestion', input: { questions } }], stop_reason: 'tool_use' } });
+  const recs = [
+    { type: 'user', timestamp: '2026-10-01T10:00:00.000Z', message: { role: 'user', content: 'go' } },
+    ask('q1', '2026-10-01T10:00:01.000Z', [{ question: 'Old one?' }]),
+    { type: 'user', timestamp: '2026-10-01T10:00:02.000Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'q1', content: 'a' }] } },
+    ask('q2', '2026-10-01T10:00:03.000Z', [{ question: 'Which group should this go in?' }, { question: 'Priority?' }])
+  ];
+  fs.writeFileSync(file, recs.map(r => JSON.stringify(r)).join('\n') + '\n');
+  const st = fs.statSync(file);
+  const tail = await new TranscriptScanner(root).readTail(file, st.mtimeMs, st.size);
+  assert.equal(tail!.pendingQuestion, true);
+  assert.equal(tail!.pendingQuestionText, 'Which group should this go in? (+1 more)');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('notificationContent: repo, session, branch and what it needs', () => {
+  const s = session({ repoRoot: '/r/dig-controls', cwdReal: '/r/dig-controls/sub', gitBranch: 'feat/x', aiTitle: 'Add commitlint', pendingQuestion: true, pendingQuestionText: 'Which config preset?' });
+  const base = { sessionId: 's1', live: live({ status: 'busy' }), session: s, job: null, since: 5 };
+  let c = notificationContent({ ...base, kind: 'needsInput', reason: 'question pending' });
+  assert.equal(c.title, 'Needs input · dig-controls');
+  assert.equal(c.subtitle, 'Add commitlint · feat/x');
+  assert.equal(c.message, 'Asks: Which config preset?');
+  c = notificationContent({ ...base, session: { ...s, pendingQuestionText: null }, live: live({ status: 'waiting', waitingFor: 'approve Bash' }), kind: 'needsInput', reason: 'approve Bash' });
+  assert.equal(c.message, 'Waiting on approve Bash');
+  c = notificationContent({ ...base, session: { ...s, lastAssistantText: '## Done\n\nAll **tests** pass.' }, kind: 'review', reason: 'finished', reviewKey: 's1:9' });
+  assert.equal(c.title, 'Finished · dig-controls');
+  assert.equal(c.message, 'Done');
+  assert.equal(eventKey({ ...base, kind: 'review', reason: 'finished', reviewKey: 's1:9' }), 's1:9');
+  assert.equal(eventKey({ ...base, kind: 'needsInput', reason: 'x' }), 's1:needsInput:5');
+  assert.ok(notificationContent({ ...base, kind: 'review', reason: 'finished', session: { ...s, lastAssistantText: 'x'.repeat(500) } }).message.length <= 180);
 });
 
 test('reviewLink: GitLab create/view merge request and GitHub pull/new', () => {
