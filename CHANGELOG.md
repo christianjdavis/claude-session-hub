@@ -3,7 +3,7 @@
 All notable changes to Claude Session Hub. The version is the git tag; the section for a tag is
 used as its GitHub Release notes.
 
-## [Unreleased]
+## [0.5.0] - 2026-11-16
 
 - **macOS notifications** when a session needs input or finishes a turn, naming the repo,
   the session (and branch) and what it needs: the pending question, the permission it is
